@@ -48,6 +48,7 @@ int UDSockServer::Init(const std::string server_addr, response_fun on_response)
 int UDSockServer::Run()
 {
     RpcRequestHdr head;
+    std::string resp_data;
     char* resp_buff = nullptr, *recv_buff = nullptr;
 
     running_ = true;
@@ -68,7 +69,7 @@ int UDSockServer::Run()
             }
             std::cout << "accept new connect" << std::endl;
         }
-
+        bzero(&head, sizeof(head));
         // 读取头部数据
         if (RecvBytes(&head, sizeof(RpcRequestHdr)) <= 0)
         {
@@ -82,7 +83,8 @@ int UDSockServer::Run()
             Disconnect("recv body");
             continue;
         }
-        std::string resp_data = on_response_((char*)recv_buff, head.data_size);
+        
+        resp_data = on_response_((char*)recv_buff, head.data_size);
 
         uint64_t resp_total_size = sizeof(RpcRequestHdr) + resp_data.size();
         if (buffer_size_ < resp_total_size)
@@ -90,18 +92,18 @@ int UDSockServer::Run()
             resp_buff = (char*)malloc(resp_total_size);
             if (!resp_buff) {
                 Disconnect("malloc failed");
+                resp_buff = recv_buff;
                 continue;
             }
             is_free = true;
         }
-
+        bzero(resp_buff, resp_total_size);
         head.data_size = resp_data.size();
         head.data = resp_buff + sizeof(RpcRequestHdr);
         memcpy(resp_buff, &head, sizeof(RpcRequestHdr));
         memcpy(resp_buff + sizeof(RpcRequestHdr), resp_data.c_str(), resp_data.size());
         
-
-        if (SendBytes((void*)resp_buff, sizeof(RpcRequestHdr) + resp_data.size()) <= 0)
+        if (SendBytes((void*)resp_buff, resp_total_size) <= 0)
         {
             Disconnect("Send data");
         }
@@ -142,7 +144,7 @@ uint64_t UDSockServer::RecvBytes(void* buff, size_t nbytes)
     uint64_t n = 0;
 again:
     if ((n = recv(cli_sock_, buff, nbytes, MSG_NOSIGNAL)) == -1) {
-        if (errno == EINTR)
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
             goto again;
         else
             return -1;
@@ -156,7 +158,7 @@ uint64_t UDSockServer::SendBytes(const void* buff, size_t nbytes)
     uint64_t n = 0;
 again:
     if ((n = send(cli_sock_, buff, nbytes, MSG_NOSIGNAL)) == -1) {
-        if (errno == EINTR)
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
             goto again;
         else
             return -1;
@@ -165,13 +167,11 @@ again:
     return n;
 }
 
-#if DOMAIN_TEST
+#if 1
 
 std::string do_sponse(char* data, uint64_t size)
 {
-    data[size] = '\0';
-    std::cout << data << std::endl;
-    return "I am from server";
+    return std::string(data, size);
 }
 
 // std::string do_sponse(char* data, uint64_t size)

@@ -77,6 +77,21 @@ void UDSockClient::Run()
 
         if (!is_connected_)
         {
+            if ((sock_ = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) 
+            {
+                continue;
+            }
+
+            // 设置超时时间为5秒
+            struct timeval timeout;
+            timeout.tv_sec = 1;
+            timeout.tv_usec = 0;
+
+            if (setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0) {
+                close(sock_);
+                sock_ = -1;
+            }
+
             if (connect(sock_, (struct sockaddr*)&addr_, sizeof(addr_)) == -1) 
             {
                 std::cerr << "connect server failed, retry count:" << retry << std::endl;
@@ -93,13 +108,18 @@ void UDSockClient::Run()
 
         clean_timeout_requeset();
 
-        if (RecvBytes(&head, sizeof(RpcRequestHdr)) <= 0)
+        std::cout << "recv head "<< std::endl;
+        bzero(&head, sizeof(head));
+
+        if (RecvBytes((char*)&head, sizeof(RpcRequestHdr)) < 0)
         {
-            if (errno != EWOULDBLOCK)
-                Disconnect("recv head");
+            if (errno != EAGAIN && errno != EWOULDBLOCK)
+                Disconnect("recv head ");
             continue;
         }
-        
+
+        if (head.data_size == 0) continue;
+
         if (buffer_size_ < head.data_size)
         {
             if (!(recv_buff = (char*)malloc(head.data_size)))
@@ -110,10 +130,12 @@ void UDSockClient::Run()
             }
             is_free = true;
         }
-
-        if (RecvBytes(recv_buff, head.data_size) <= 0)
+        std::cout << "recv body size: " << head.data_size << std::endl;
+        bzero(recv_buff, head.data_size);
+        if (RecvBytes(recv_buff, head.data_size) < 0)
         {
-            Disconnect("recv body");
+            if (errno != EAGAIN && errno != EWOULDBLOCK)
+                Disconnect("recv body");
             continue;
         }
         {
@@ -136,29 +158,33 @@ void UDSockClient::Run()
 int UDSockClient::SendRequest(std::string& request, async_result_cb result_cbk)
 {
     static unsigned long long request_id = 0;
+
     RequestValue value;
     value.cbk = result_cbk;
     clock_gettime(CLOCK_REALTIME, &value.time);
+
     int buff_size = sizeof(RpcRequestHdr) + request.size();
     char* send_buff = (char*)malloc(sizeof(char) * buff_size);
     if (!send_buff)
     {
         return -errno;
     }
+
     RpcRequestHdr* head = reinterpret_cast<RpcRequestHdr*>(send_buff);
     head->data_size = request.size();
     head->data = send_buff + sizeof(RpcRequestHdr);
     memcpy(head->data, request.c_str(), request.size());
+
     {
         std::lock_guard<std::mutex> _(lock_);
         head->id = request_id++;
         request_.insert(std::make_pair(head->id, value));
         if (SendBytes(send_buff, buff_size) <= 0)
         {
-            Disconnect("send bytes");
             return -errno;
         }
     }
+    
     free(send_buff);
     return 0;
 }
@@ -180,12 +206,13 @@ inline int64_t UDSockClient::diff_ms(struct timespec& start, struct timespec& no
 
 inline void UDSockClient::clean_timeout_requeset()
 {
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    std::lock_guard<std::mutex> _(lock_);
     for (auto it = request_.begin(); it != request_.end();) 
     {
-        struct timespec now;
-        clock_gettime(CLOCK_REALTIME, &now);
-        if (diff_ms(it->second.time, now) >= kCleanTimeoutRequest * 1000) {
-            std::cout << "delete timeout: " << it->first << std::endl;
+        if (diff_ms(it->second.time, now) >= kCleanTimeoutRequest) {
+            std::cout << "clean request: " << it->first << std::endl;
             it = request_.erase(it);
         } else {
             ++it;
@@ -199,76 +226,146 @@ void UDSockClient::Disconnect(std::string str)
     is_connected_ = false;
 }
 
-uint64_t UDSockClient::RecvBytes(void* buff, size_t nbytes)
+int64_t UDSockClient::RecvBytes(char* buff, int64_t nbytes)
 {
-    uint64_t n = 0;
+    int64_t n = 0;
 again:
-    if ((n = recv(sock_, buff, nbytes, 0)) == -1) {
+    n = recv(sock_, (void*)buff, nbytes, 0);
+    std::cout << "n = " << n << " " << errno << std::endl;
+    if (n == -1) {
+        if (errno == EINTR)
+            goto again;
+        else
+            return -1;
+    } else if (n == 0) {
+        return -1;
+    }
+
+    buff += n;
+    nbytes -= n;
+    if (nbytes > 0) {
+        std::cout << "again recv, free size = " << nbytes << " n = " << n << std::endl;
+        goto again;
+    }
+    assert(nbytes == 0);
+    return nbytes;
+}
+
+int64_t UDSockClient::SendBytes(const char* buff, int64_t nbytes)
+{
+    int64_t n = 0, send_size = 0;
+again:
+    if ((n = send(sock_, (void*)buff, nbytes, MSG_NOSIGNAL | MSG_DONTWAIT)) == -1) {
         if (errno == EINTR)
             goto again;
         else
             return -1;
     }
-    if (n) assert(n == nbytes);
-    return n;
-}
-
-uint64_t UDSockClient::SendBytes(const void* buff, size_t nbytes)
-{
-    uint64_t n = 0;
-again:
-    if ((n = send(sock_, buff, nbytes, MSG_NOSIGNAL)) == -1) {
-        if (errno == EINTR)
-            goto again;
-        else
-            return -1;
+    send_size += n;
+    if (send_size < nbytes) {
+        std::cout << "again send, size = " << send_size << std::endl;
+        goto again;
     }
     if(n) assert(n == nbytes);
     return n;
 }
 
-#if DOMAIN_TEST
+#if 1
 
-void do_respone1(char* resp_buff, uint64_t size)
+UDSockClient client;
+
+void disconn_event()
 {
-    resp_buff[size] = '\0';
-    std::cerr << "do_respone1 data: " << resp_buff << std::endl;
+    std::cerr << "server quit...!!!" << std::endl;
+}
+
+void do_respone(char* resp_buff, uint64_t size)
+{
+    static uint64_t expect_id = 0;
+    uint64_t recv_id = atoll(resp_buff);
+    if (recv_id != ++expect_id)
+        std::cerr << "expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
+    else std::cout << "1 success" << std::endl;
+}
+
+void loop_send()
+{
+    static uint64_t req_id = 0;
+    while(1)
+    {
+        std::string req(std::to_string(++req_id));
+        if(client.SendRequest(req, do_respone) < 0) 
+        {
+            // perror("send req failed");
+        }
+        usleep(20000);
+
+    }
 }
 
 void do_respone2(char* resp_buff, uint64_t size)
 {
-    resp_buff[size] = '\0';
-    std::cerr << "do_respone2 data: " << resp_buff << std::endl;
+    static uint64_t expect_id = 0;
+    uint64_t recv_id = atoll(resp_buff);
+    if (recv_id != ++expect_id)
+        std::cerr << "expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
 }
 
-void disconn_event()
+void loop_send2()
 {
-    std::cerr << "server existed!!!" << std::endl;
+    static uint64_t req_id = 0;
+    while(1)
+    {
+        std::string req(std::to_string(++req_id));
+        if(client.SendRequest(req, do_respone2) < 0) 
+        {
+            // perror("send req failed");
+        }
+        usleep(20000);
+    }
+}
+
+void do_respone3(char* resp_buff, uint64_t size)
+{
+    static uint64_t expect_id = 0;
+    uint64_t recv_id = atoll(resp_buff);
+    if (recv_id != ++expect_id)
+        std::cerr << "expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
+    
+}
+
+void loop_send3()
+{
+    static uint64_t req_id = 0;
+    while(1)
+    {
+        std::string req(std::to_string(++req_id));
+        if(client.SendRequest(req, do_respone3) < 0) 
+        {
+            // perror("send req failed");
+        }
+        usleep(20000);
+    }
 }
 
 int main() {
 
     try
     {
-        UDSockClient client;
+        const int th_nums = 3;
         if (client.Init(kServerAddress, &disconn_event) < 0)
         {
             perror("Init");
             return 1;
         }
-        while(1)
+        std::thread threads[th_nums];
+        threads[0] = std::thread(&loop_send);
+        threads[1] = std::thread(&loop_send2);
+        threads[2] = std::thread(&loop_send3);
+
+        for (int i = 0; i < th_nums; i++)
         {
-            std::string req("request 1");
-            if(client.SendRequest(req, do_respone1) < 0) 
-            {
-                perror("send req1 failed");
-            }
-            req = "request 2";
-            if(client.SendRequest(req, do_respone2) < 0)
-            {
-                perror("send req2 failed");
-            }
-            sleep(1);
+            threads[i].join();
         }
     }
     catch(const std::exception& e)

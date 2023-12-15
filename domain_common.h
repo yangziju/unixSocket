@@ -2,12 +2,12 @@
 #define _DOMAIN_COMMON_
 #include <iostream>
 
-const std::string kServerAddress = "/home/ojo/project/AIO/unix.sock";
+const std::string kServerAddress = "./unix.sock";
 
 // client configure
 const int kReConnectCount = 2;
 const int kReconnectInterval = 3; // s
-const int kCleanTimeoutRequest = 1; // s
+const int kCleanTimeoutRequest = 1000; // ms
 
 typedef void (*disconnect_event)();
 typedef void (*async_result_cb)(char* data, uint64_t size);
@@ -25,6 +25,5 @@ struct RequestValue
     struct timespec time;
     async_result_cb cbk;
 };
-
 
 #endif // _DOMAIN_COMMON_

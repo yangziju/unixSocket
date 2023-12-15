@@ -27,9 +27,9 @@ protected:
 
     void Disconnect(std::string str);
 
-    uint64_t RecvBytes(void* buff, size_t nbytes);
+    int64_t RecvBytes(char* buff, int64_t nbytes);
 
-    uint64_t SendBytes(const void* buff, size_t nbytes);
+    int64_t SendBytes(const char* buff, int64_t nbytes);
 
 private:
 
