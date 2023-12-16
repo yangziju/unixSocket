@@ -6,7 +6,7 @@
 #include <assert.h>
 #include "domain_server.h"
 
-UDSockServer::UDSockServer() : lis_sock_(-1), cli_sock_(-1), buffer_size_(5120), running_(false)
+UDSockServer::UDSockServer() : lis_sock_(-1), cli_sock_(-1), buffer_size_(1), running_(false)
 {}
 
 UDSockServer::~UDSockServer()
@@ -73,7 +73,7 @@ int UDSockServer::Run()
 
         bzero(&head, sizeof(head));
     
-        if (RecvBytes(&head, sizeof(RpcRequestHdr)) <= 0)
+        if (RecvBytes((char*)&head, sizeof(RpcRequestHdr)) == -1)
         {
             CleanSocket();
             continue;
@@ -82,7 +82,7 @@ int UDSockServer::Run()
         if (head.data_size == 0) continue;
 
         bzero(recv_buff, buffer_size_);
-        if (RecvBytes(recv_buff, head.data_size) <= 0) 
+        if (RecvBytes(recv_buff, head.data_size) == -1) 
         {
             CleanSocket();
             continue;
@@ -106,7 +106,7 @@ int UDSockServer::Run()
         memcpy(resp_buff, &head, sizeof(RpcRequestHdr));
         memcpy(resp_buff + sizeof(RpcRequestHdr), resp_data.c_str(), resp_data.size());
         
-        if (SendBytes((void*)resp_buff, resp_total_size) <= 0)
+        if (SendBytes(resp_buff, resp_total_size) == -1)
         {
             CleanSocket();
         }
@@ -141,32 +141,46 @@ void UDSockServer::CleanSocket()
     cli_sock_ = -1;
 }
 
-uint64_t UDSockServer::RecvBytes(void* buff, size_t nbytes)
+int64_t UDSockServer::RecvBytes(char* buff, int64_t nbytes)
 {
-    uint64_t n = 0;
+    int64_t n = 0;
 again:
-    if ((n = recv(cli_sock_, buff, nbytes, MSG_NOSIGNAL)) == -1) {
+    n = recv(cli_sock_, (void*)buff, nbytes, 0);
+    if (n == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
             goto again;
         else
             return -1;
+    } else if (n == 0) {
+        return -1;
     }
-    if (n) assert(n == nbytes);
-    return n;
+
+    buff += n;
+    nbytes -= n;
+    if (nbytes > 0) {
+        goto again;
+    }
+    assert(nbytes == 0);
+    return nbytes;
 }
 
-uint64_t UDSockServer::SendBytes(const void* buff, size_t nbytes)
+int64_t UDSockServer::SendBytes(const char* buff, int64_t nbytes)
 {
-    uint64_t n = 0;
+    int64_t n = 0;
 again:
-    if ((n = send(cli_sock_, buff, nbytes, MSG_NOSIGNAL)) == -1) {
+    if ((n = send(cli_sock_, (void*)buff, nbytes, MSG_NOSIGNAL)) == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
             goto again;
         else
             return -1;
     }
-    if(n) assert(n == nbytes);
-    return n;
+    buff += n;
+    nbytes -= n;
+    if (nbytes > 0) {
+        goto again;
+    }
+    assert(nbytes == 0);
+    return nbytes;
 }
 
 #if 1

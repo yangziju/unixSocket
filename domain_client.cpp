@@ -6,7 +6,7 @@
 #include "domain_client.h"
 
 UDSockClient::UDSockClient()
-    :buffer_size_(5120), sock_(-1), running_(false) 
+    :buffer_size_(1), sock_(-1), running_(false) 
 {
 
 }
@@ -38,14 +38,14 @@ int UDSockClient::Init(const std::string server_addr, disconnect_event disconnec
     if (setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) == -1) 
     {
         ret = -errno;
-        CleanSocket();
+        CleanSocket("init");
         return ret;
     }
 
     if (connect(sock_, (struct sockaddr*)&addr_, sizeof(addr_)) == -1) 
     {
         ret = -errno;
-        CleanSocket();
+        CleanSocket("init");
         return ret;
     }
 
@@ -113,7 +113,7 @@ void UDSockClient::Run()
         {
             if(ConnectServer() < 0)
             {
-                CleanSocket();
+                CleanSocket("connect");
                 continue;
             }
         }
@@ -123,7 +123,7 @@ void UDSockClient::Run()
         if (RecvBytes((char*)&head, sizeof(RpcRequestHdr)) < 0)
         {
             if (errno != EAGAIN && errno != EWOULDBLOCK)
-                CleanSocket();
+                CleanSocket("recv head");
             continue;
         }
 
@@ -145,7 +145,7 @@ void UDSockClient::Run()
         if (RecvBytes(recv_buff, head.data_size) < 0)
         {
             if (errno != EAGAIN && errno != EWOULDBLOCK)
-                CleanSocket();
+                CleanSocket("recv body");
             continue;
         }
 
@@ -244,8 +244,9 @@ bool UDSockClient::IsConnected()
     return sock_ != -1;
 }
 
-void UDSockClient::CleanSocket()
+void UDSockClient::CleanSocket(std::string str)
 {
+    std::cout << "DEBUG " << str << " errno = " << errno << std::endl;
     if (sock_ != -1)
     {
         close(sock_);
@@ -258,7 +259,6 @@ int64_t UDSockClient::RecvBytes(char* buff, int64_t nbytes)
     int64_t n = 0;
 again:
     n = recv(sock_, (void*)buff, nbytes, 0);
-    // std::cout << "DEBUG n = " << n << " " << errno << std::endl;
     if (n == -1) {
         if (errno == EINTR)
             goto again;
@@ -280,7 +280,7 @@ again:
 
 int64_t UDSockClient::SendBytes(const char* buff, int64_t nbytes)
 {
-    int64_t n = 0, send_size = 0;
+    int64_t n = 0;
 again:
     if ((n = send(sock_, (void*)buff, nbytes, MSG_NOSIGNAL)) == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
@@ -288,12 +288,13 @@ again:
         else
             return -1;
     }
-    send_size += n;
-    if (send_size < nbytes) {
-        std::cout << "DEBUG again send, size = " << send_size << std::endl;
+    buff += n;
+    nbytes -= n;
+    if (nbytes > 0) {
+        std::cout << "DEBUG again send, left size = " << nbytes << std::endl;
         goto again;
     }
-    if(n) assert(n == nbytes);
+    assert(nbytes == 0);
     return n;
 }
 
@@ -310,8 +311,8 @@ void do_respone(char* resp_buff, uint64_t size)
 {
     static uint64_t expect_id = 0;
     uint64_t recv_id = atoll(resp_buff);
-    // if (recv_id != ++expect_id)
-        // std::cerr << "expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
+    if (recv_id != ++expect_id)
+        std::cerr << "expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
     // else std::cout << "1 success" << std::endl;
 }
 
@@ -334,8 +335,8 @@ void do_respone2(char* resp_buff, uint64_t size)
 {
     static uint64_t expect_id = 0;
     uint64_t recv_id = atoll(resp_buff);
-    // if (recv_id != ++expect_id)
-        // std::cerr << "expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
+    if (recv_id != ++expect_id)
+        std::cerr << "expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
     // else std::cout << "2 success" << std::endl;
 }
 
@@ -357,10 +358,9 @@ void do_respone3(char* resp_buff, uint64_t size)
 {
     static uint64_t expect_id = 0;
     uint64_t recv_id = atoll(resp_buff);
-    // if (recv_id != ++expect_id)
-        // std::cerr << "expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
+    if (recv_id != ++expect_id)
+        std::cerr << "expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
     // else std::cout << "3 success" << std::endl;
-    
 }
 
 void loop_send3()

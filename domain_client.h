@@ -27,7 +27,7 @@ protected:
 
     inline void clean_timeout_requeset();
 
-    void CleanSocket();
+    void CleanSocket(std::string str);
 
     int ConnectServer();
 
