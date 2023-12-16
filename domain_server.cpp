@@ -6,7 +6,7 @@
 #include <assert.h>
 #include "domain_server.h"
 
-UDSockServer::UDSockServer() : lis_sock_(-1), cli_sock_(-1), buffer_size_(1), running_(false)
+UDSockServer::UDSockServer() : lis_sock_(-1), cli_sock_(-1), buffer_size_(1024), running_(false)
 {}
 
 UDSockServer::~UDSockServer()

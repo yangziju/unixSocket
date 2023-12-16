@@ -6,7 +6,7 @@
 #include "domain_client.h"
 
 UDSockClient::UDSockClient()
-    :buffer_size_(1), sock_(-1), running_(false) 
+    :buffer_size_(1024), sock_(-1), running_(false) 
 {
 
 }
