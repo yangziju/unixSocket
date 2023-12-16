@@ -63,24 +63,28 @@ int UDSockServer::Run()
     {
         if (cli_sock_ == -1)
         {
+            std::cout << "waitting for client to connect" << std::endl;
             cli_sock_ = accept(lis_sock_, NULL, NULL);
             if (cli_sock_ == -1) {
                 continue;
             }
-            std::cout << "accept new connect" << std::endl;
+            std::cout << "client connected" << std::endl;
         }
+
         bzero(&head, sizeof(head));
-        // 读取头部数据
+    
         if (RecvBytes(&head, sizeof(RpcRequestHdr)) <= 0)
         {
-            Disconnect("recv head");
+            CleanSocket();
             continue;
         }
 
-        // 解析数据体
+        if (head.data_size == 0) continue;
+
+        bzero(recv_buff, buffer_size_);
         if (RecvBytes(recv_buff, head.data_size) <= 0) 
         {
-            Disconnect("recv body");
+            CleanSocket();
             continue;
         }
         
@@ -89,9 +93,8 @@ int UDSockServer::Run()
         uint64_t resp_total_size = sizeof(RpcRequestHdr) + resp_data.size();
         if (buffer_size_ < resp_total_size)
         {
-            resp_buff = (char*)malloc(resp_total_size);
-            if (!resp_buff) {
-                Disconnect("malloc failed");
+            if (!(resp_buff = (char*)malloc(resp_total_size))) {
+                std::cout << "domain socket, malloc failed" << std::endl;
                 resp_buff = recv_buff;
                 continue;
             }
@@ -105,7 +108,7 @@ int UDSockServer::Run()
         
         if (SendBytes((void*)resp_buff, resp_total_size) <= 0)
         {
-            Disconnect("Send data");
+            CleanSocket();
         }
 
         if(is_free)
@@ -132,9 +135,8 @@ void UDSockServer::stop()
     }
 }
 
-void UDSockServer::Disconnect(std::string fun_name)
+void UDSockServer::CleanSocket()
 {
-    std::cout << fun_name <<  ": Client disconnected, errno = " << errno << std::endl;
     close(cli_sock_);
     cli_sock_ = -1;
 }

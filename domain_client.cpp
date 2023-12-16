@@ -6,7 +6,7 @@
 #include "domain_client.h"
 
 UDSockClient::UDSockClient()
-    :buffer_size_(5120), sock_(-1), is_connected_(false), running_(false) 
+    :buffer_size_(5120), sock_(-1), running_(false) 
 {
 
 }
@@ -22,36 +22,69 @@ UDSockClient::~UDSockClient()
 int UDSockClient::Init(const std::string server_addr, disconnect_event disconnect_fun)
 {
     on_disconnect = disconnect_fun;
+    addr_.sun_family = AF_UNIX;
+    std::strcpy(addr_.sun_path, server_addr.c_str());
+    int ret = 0;
+    
     if ((sock_ = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) 
     {
         return -errno;
     }
 
-    // 设置超时时间为5秒
+    struct timeval timeout;
+    timeout.tv_sec = 1;
+    timeout.tv_usec = 0;
+
+    if (setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) == -1) 
+    {
+        ret = -errno;
+        CleanSocket();
+        return ret;
+    }
+
+    if (connect(sock_, (struct sockaddr*)&addr_, sizeof(addr_)) == -1) 
+    {
+        ret = -errno;
+        CleanSocket();
+        return ret;
+    }
+
+    thread_ = std::thread(&UDSockClient::Run, this);
+
+    return 0;
+}
+
+int UDSockClient::ConnectServer()
+{
+    int max_retry = kReConnectCount;
+    int ret = 0;
+    if ((sock_ = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) 
+    {
+        return -errno;
+    }
+
     struct timeval timeout;
     timeout.tv_sec = 1;
     timeout.tv_usec = 0;
 
     if (setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0) {
-        close(sock_);
-        sock_ = -1;
         return -errno;
     }
 
-    addr_.sun_family = AF_UNIX;
-    std::strcpy(addr_.sun_path, server_addr.c_str());
-    
-    if (connect(sock_, (struct sockaddr*)&addr_, sizeof(addr_)) == -1) 
+    for (int retry = 1; retry <= max_retry; retry++)
     {
-        close(sock_);
-        sock_ = -1;
-        return -errno;
+        if (connect(sock_, (struct sockaddr*)&addr_, sizeof(addr_)) == -1) 
+        {
+            std::cerr << "connect server failed, retry count:" << retry << std::endl;
+            sleep(kReconnectInterval);
+            clean_timeout_requeset();
+            continue;
+        }
+        return 0;
     }
 
-    is_connected_ = true;
-    thread_ = std::thread(&UDSockClient::Run, this);
-
-    return 0;
+    on_disconnect();
+    return -ECONNREFUSED;
 }
 
 void UDSockClient::Run()
@@ -59,7 +92,6 @@ void UDSockClient::Run()
     RpcRequestHdr head;
     uint64_t bytes_received = 0;
     running_ = true;
-    int retry = 1;
     char* reserve_buff = (char*)malloc(buffer_size_);
     if(!reserve_buff) 
         return;
@@ -75,46 +107,23 @@ void UDSockClient::Run()
             is_free = false;
         }
 
-        if (!is_connected_)
-        {
-            if ((sock_ = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) 
-            {
-                continue;
-            }
-
-            // 设置超时时间为5秒
-            struct timeval timeout;
-            timeout.tv_sec = 1;
-            timeout.tv_usec = 0;
-
-            if (setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0) {
-                close(sock_);
-                sock_ = -1;
-            }
-
-            if (connect(sock_, (struct sockaddr*)&addr_, sizeof(addr_)) == -1) 
-            {
-                std::cerr << "connect server failed, retry count:" << retry << std::endl;
-                sleep(kReconnectInterval);
-                if (++retry == kReConnectCount)
-                {
-                    on_disconnect();
-                    retry = 1;
-                }
-                continue;
-            }
-            is_connected_ = true;
-        }
-
         clean_timeout_requeset();
 
-        std::cout << "recv head "<< std::endl;
+        if (sock_ == -1)
+        {
+            if(ConnectServer() < 0)
+            {
+                CleanSocket();
+                continue;
+            }
+        }
+
         bzero(&head, sizeof(head));
 
         if (RecvBytes((char*)&head, sizeof(RpcRequestHdr)) < 0)
         {
             if (errno != EAGAIN && errno != EWOULDBLOCK)
-                Disconnect("recv head ");
+                CleanSocket();
             continue;
         }
 
@@ -124,22 +133,24 @@ void UDSockClient::Run()
         {
             if (!(recv_buff = (char*)malloc(head.data_size)))
             {
-                std::cerr << "malloc body failed" << std::endl;
+                std::cerr << "domain socket, malloc failed" << std::endl;
                 recv_buff = reserve_buff;
                 continue;
             }
             is_free = true;
         }
-        std::cout << "recv body size: " << head.data_size << std::endl;
+
+        // std::cout << "DEBUG recv body size: " << head.data_size << std::endl;
         bzero(recv_buff, head.data_size);
         if (RecvBytes(recv_buff, head.data_size) < 0)
         {
             if (errno != EAGAIN && errno != EWOULDBLOCK)
-                Disconnect("recv body");
+                CleanSocket();
             continue;
         }
+
         {
-            std::lock_guard<std::mutex> _(lock_);
+            std::lock_guard<std::mutex> _(lock_req_);
             auto it = request_.find(head.id);
             if (it != request_.end())
             {
@@ -158,7 +169,7 @@ void UDSockClient::Run()
 int UDSockClient::SendRequest(std::string& request, async_result_cb result_cbk)
 {
     static unsigned long long request_id = 0;
-
+    int ret = 0;
     RequestValue value;
     value.cbk = result_cbk;
     clock_gettime(CLOCK_REALTIME, &value.time);
@@ -176,17 +187,25 @@ int UDSockClient::SendRequest(std::string& request, async_result_cb result_cbk)
     memcpy(head->data, request.c_str(), request.size());
 
     {
-        std::lock_guard<std::mutex> _(lock_);
+        std::lock_guard<std::mutex> _(lock_req_);
         head->id = request_id++;
         request_.insert(std::make_pair(head->id, value));
+    }
+
+    {
+        std::lock_guard<std::mutex> _(lock_send_);
         if (SendBytes(send_buff, buff_size) <= 0)
         {
-            return -errno;
+            ret = -errno;
         }
     }
-    
-    free(send_buff);
-    return 0;
+
+    if (send_buff)
+    {
+        free(send_buff);
+    }
+
+    return ret;
 }
 
 void UDSockClient::Stop()
@@ -208,11 +227,11 @@ inline void UDSockClient::clean_timeout_requeset()
 {
     struct timespec now;
     clock_gettime(CLOCK_REALTIME, &now);
-    std::lock_guard<std::mutex> _(lock_);
+    std::lock_guard<std::mutex> _(lock_req_);
     for (auto it = request_.begin(); it != request_.end();) 
     {
         if (diff_ms(it->second.time, now) >= kCleanTimeoutRequest) {
-            std::cout << "clean request: " << it->first << std::endl;
+            std::cout << "DEBUG clean request: " << it->first << " left count: " << request_.size() << std::endl;
             it = request_.erase(it);
         } else {
             ++it;
@@ -220,10 +239,18 @@ inline void UDSockClient::clean_timeout_requeset()
     }
 }
 
-void UDSockClient::Disconnect(std::string str)
+bool UDSockClient::IsConnected()
 {
-    std::cerr << str << "server disconnect errno = " << errno << std::endl;
-    is_connected_ = false;
+    return sock_ != -1;
+}
+
+void UDSockClient::CleanSocket()
+{
+    if (sock_ != -1)
+    {
+        close(sock_);
+        sock_ = -1;
+    }
 }
 
 int64_t UDSockClient::RecvBytes(char* buff, int64_t nbytes)
@@ -231,7 +258,7 @@ int64_t UDSockClient::RecvBytes(char* buff, int64_t nbytes)
     int64_t n = 0;
 again:
     n = recv(sock_, (void*)buff, nbytes, 0);
-    std::cout << "n = " << n << " " << errno << std::endl;
+    // std::cout << "DEBUG n = " << n << " " << errno << std::endl;
     if (n == -1) {
         if (errno == EINTR)
             goto again;
@@ -244,7 +271,7 @@ again:
     buff += n;
     nbytes -= n;
     if (nbytes > 0) {
-        std::cout << "again recv, free size = " << nbytes << " n = " << n << std::endl;
+        std::cout << "DEBUG again recv, left size = " << nbytes << " n = " << n << std::endl;
         goto again;
     }
     assert(nbytes == 0);
@@ -255,15 +282,15 @@ int64_t UDSockClient::SendBytes(const char* buff, int64_t nbytes)
 {
     int64_t n = 0, send_size = 0;
 again:
-    if ((n = send(sock_, (void*)buff, nbytes, MSG_NOSIGNAL | MSG_DONTWAIT)) == -1) {
-        if (errno == EINTR)
+    if ((n = send(sock_, (void*)buff, nbytes, MSG_NOSIGNAL)) == -1) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
             goto again;
         else
             return -1;
     }
     send_size += n;
     if (send_size < nbytes) {
-        std::cout << "again send, size = " << send_size << std::endl;
+        std::cout << "DEBUG again send, size = " << send_size << std::endl;
         goto again;
     }
     if(n) assert(n == nbytes);
@@ -283,9 +310,9 @@ void do_respone(char* resp_buff, uint64_t size)
 {
     static uint64_t expect_id = 0;
     uint64_t recv_id = atoll(resp_buff);
-    if (recv_id != ++expect_id)
-        std::cerr << "expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
-    else std::cout << "1 success" << std::endl;
+    // if (recv_id != ++expect_id)
+        // std::cerr << "expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
+    // else std::cout << "1 success" << std::endl;
 }
 
 void loop_send()
@@ -307,8 +334,9 @@ void do_respone2(char* resp_buff, uint64_t size)
 {
     static uint64_t expect_id = 0;
     uint64_t recv_id = atoll(resp_buff);
-    if (recv_id != ++expect_id)
-        std::cerr << "expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
+    // if (recv_id != ++expect_id)
+        // std::cerr << "expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
+    // else std::cout << "2 success" << std::endl;
 }
 
 void loop_send2()
@@ -329,8 +357,9 @@ void do_respone3(char* resp_buff, uint64_t size)
 {
     static uint64_t expect_id = 0;
     uint64_t recv_id = atoll(resp_buff);
-    if (recv_id != ++expect_id)
-        std::cerr << "expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
+    // if (recv_id != ++expect_id)
+        // std::cerr << "expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
+    // else std::cout << "3 success" << std::endl;
     
 }
 

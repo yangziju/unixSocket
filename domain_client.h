@@ -20,12 +20,16 @@ public:
 
     void Stop();
 
+    bool IsConnected();
+
 protected:
     inline int64_t diff_ms(struct timespec& start, struct timespec& now);
 
     inline void clean_timeout_requeset();
 
-    void Disconnect(std::string str);
+    void CleanSocket();
+
+    int ConnectServer();
 
     int64_t RecvBytes(char* buff, int64_t nbytes);
 
@@ -35,12 +39,12 @@ private:
 
     int buffer_size_;
     int sock_;
-    bool is_connected_;
     bool running_;
     sockaddr_un addr_;
     disconnect_event on_disconnect;
+    std::mutex lock_send_;
     std::thread thread_;
 
-    std::mutex lock_;
+    std::mutex lock_req_;
     std::map<unsigned long long, RequestValue> request_;
 };

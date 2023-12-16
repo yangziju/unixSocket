@@ -16,7 +16,7 @@ public:
 
 protected:
 
-    void Disconnect(std::string fun_name);
+    void CleanSocket();
 
     uint64_t RecvBytes(void* buff, size_t nbytes);
 
