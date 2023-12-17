@@ -6,13 +6,19 @@
 #include <assert.h>
 #include "domain_server.h"
 
-UDSockServer::UDSockServer() : lis_sock_(-1), cli_sock_(-1), buffer_size_(1024), running_(false)
+UDSockServer::UDSockServer() : lis_sock_(-1), cli_sock_(-1), buffer_size_(kBufferSize), running_(false)
 {}
 
 UDSockServer::~UDSockServer()
 {
-    close(lis_sock_);
-    close(cli_sock_);
+    if (lis_sock_ != -1)
+    {
+        close(lis_sock_);
+    }
+    if (cli_sock_ != -1)
+    {
+        close(cli_sock_);
+    }
     unlink(address_.c_str());
 }
 
@@ -20,9 +26,21 @@ int UDSockServer::Init(const std::string server_addr, response_fun on_response)
 {
     address_ = server_addr;
     on_response_ = on_response;
+    int ret = 0;
 
     lis_sock_ = socket(AF_UNIX, SOCK_STREAM, 0);
     if (-1 == lis_sock_)
+    {
+        return -errno;
+    }
+
+    int flags = fcntl(lis_sock_, F_GETFL, 0);
+    if (flags == -1)
+    {
+        return -errno;
+    }
+
+    if (-1 == fcntl(lis_sock_, F_SETFL, flags | O_NONBLOCK))
     {
         return -errno;
     }
@@ -35,13 +53,22 @@ int UDSockServer::Init(const std::string server_addr, response_fun on_response)
 
     if (-1 == bind(lis_sock_, (struct sockaddr*)&server_sockaddr, sizeof(server_sockaddr)))
     {
+        ret = -errno;
         close(lis_sock_);
         unlink(address_.c_str());
-        return -errno;
+        return ret;
     }
 
-    listen(lis_sock_, 5);
-    // thread_ = std::thread(&UDSockServer::Run, this);
+    if (-1 == listen(lis_sock_, 5))
+    {
+        ret = -errno;
+        close(lis_sock_);
+        unlink(address_.c_str());
+        return ret;
+    }
+
+    thread_ = std::thread(&UDSockServer::Run, this);
+
     return 0;
 }
 
@@ -49,30 +76,47 @@ int UDSockServer::Run()
 {
     RpcRequestHdr head;
     std::string resp_data;
-    char* resp_buff = nullptr, *recv_buff = nullptr;
+    bool free_recv_buff = false, free_resp_buff = false;
+    char *resp_buff = nullptr, *recv_buff = nullptr, *reserve_buff = nullptr;
 
     running_ = true;
-    bool is_free = false;
-    if (!(recv_buff = (char*)malloc(buffer_size_)))
+    if (!(reserve_buff = (char*)malloc(buffer_size_)))
     {
         return -errno;
     }
-    resp_buff = recv_buff;
+
+    recv_buff = reserve_buff;
+    resp_buff = reserve_buff;
 
     while(running_)
     {
+        if(free_recv_buff)
+        {
+            free(recv_buff);
+            recv_buff = reserve_buff;
+            free_recv_buff = false;
+        }
+
+        if(free_resp_buff)
+        {
+            free(resp_buff);
+            resp_buff = reserve_buff;
+            free_resp_buff = false;
+        }
+        bzero(reserve_buff, buffer_size_);
+        
         if (cli_sock_ == -1)
         {
             std::cout << "waitting for client to connect" << std::endl;
             cli_sock_ = accept(lis_sock_, NULL, NULL);
             if (cli_sock_ == -1) {
+                sleep(1);
                 continue;
             }
             std::cout << "client connected" << std::endl;
         }
 
-        bzero(&head, sizeof(head));
-    
+        bzero(&head, sizeof(RpcRequestHdr));
         if (RecvBytes((char*)&head, sizeof(RpcRequestHdr)) == -1)
         {
             CleanSocket();
@@ -81,7 +125,14 @@ int UDSockServer::Run()
 
         if (head.data_size == 0) continue;
 
-        bzero(recv_buff, buffer_size_);
+        if (buffer_size_ < head.data_size)
+        {
+            recv_buff = (char*)malloc(head.data_size);
+            assert(recv_buff);
+            free_recv_buff = true;
+        }
+
+        bzero(recv_buff, head.data_size);
         if (RecvBytes(recv_buff, head.data_size) == -1) 
         {
             CleanSocket();
@@ -95,14 +146,14 @@ int UDSockServer::Run()
         {
             if (!(resp_buff = (char*)malloc(resp_total_size))) {
                 std::cout << "domain socket, malloc failed" << std::endl;
-                resp_buff = recv_buff;
+                resp_buff = reserve_buff;
                 continue;
             }
-            is_free = true;
+            free_resp_buff = true;
         }
+    
         bzero(resp_buff, resp_total_size);
         head.data_size = resp_data.size();
-        head.data = resp_buff + sizeof(RpcRequestHdr);
         memcpy(resp_buff, &head, sizeof(RpcRequestHdr));
         memcpy(resp_buff + sizeof(RpcRequestHdr), resp_data.c_str(), resp_data.size());
         
@@ -110,25 +161,36 @@ int UDSockServer::Run()
         {
             CleanSocket();
         }
-
-        if(is_free)
-        {
-            free(resp_buff);
-            is_free = false;
-            resp_buff = recv_buff;
-        }
     }
-    if (recv_buff)
+    if (reserve_buff)
+    {
+        free(reserve_buff);
+        reserve_buff = nullptr;
+    }
+
+    if(free_recv_buff)
     {
         free(recv_buff);
-        recv_buff = nullptr;
     }
+
+    if(free_resp_buff)
+    {
+        free(resp_buff);
+    }
+
+    std::cout << "udsocket server thread exit" << std::endl;
+
     return 0;
 }
 
-void UDSockServer::stop()
+void UDSockServer::Stop()
 {
     running_ = false;
+    CleanSocket();
+    if (lis_sock_ != -1)
+    {
+        close(lis_sock_);
+    }
     if (thread_.joinable())
     {
         thread_.join();
@@ -137,8 +199,11 @@ void UDSockServer::stop()
 
 void UDSockServer::CleanSocket()
 {
-    close(cli_sock_);
-    cli_sock_ = -1;
+    if (cli_sock_ != -1)
+    {
+        close(cli_sock_);
+        cli_sock_ = -1;
+    }
 }
 
 int64_t UDSockServer::RecvBytes(char* buff, int64_t nbytes)
@@ -168,12 +233,16 @@ int64_t UDSockServer::SendBytes(const char* buff, int64_t nbytes)
 {
     int64_t n = 0;
 again:
-    if ((n = send(cli_sock_, (void*)buff, nbytes, MSG_NOSIGNAL)) == -1) {
+    n = send(cli_sock_, (void*)buff, nbytes, MSG_NOSIGNAL);
+    if (n == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
             goto again;
         else
             return -1;
+    } else if (n == 0) {
+        return -1;
     }
+
     buff += n;
     nbytes -= n;
     if (nbytes > 0) {
@@ -182,44 +251,3 @@ again:
     assert(nbytes == 0);
     return nbytes;
 }
-
-#if 1
-
-std::string do_sponse(char* data, uint64_t size)
-{
-    return std::string(data, size);
-}
-
-// std::string do_sponse(char* data, uint64_t size)
-// {
-//     RequestHead* head = reinterpret_cast<RequestHead*>(data);
-//     switch (head->type)
-//     {
-//     case ADD:
-//     {
-//         AddRequest* add_req = reinterpret_cast<AddRequest*>(data + sizeof(RequestHead));
-//         return do_add(add_req);
-//     }
-//     case DEL:
-//     {
-//         DelRequest* del_req = reinterpret_cast<DelRequest*>(data + sizeof(RequestHead));
-//         return do_del(del_req);
-//     }
-//     default:
-//         std::cout << "other.." << std::endl;
-//         break;
-//     }
-// }
-
-int main()
-{
-    UDSockServer server;
-    if (server.Init(kServerAddress, do_sponse) < 0)
-    {
-        perror("init");
-    }
-    server.Run();
-    return 0;
-}
-
-#endif

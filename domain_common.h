@@ -8,6 +8,7 @@ const std::string kServerAddress = "./unix.sock";
 const int kReConnectCount = 2;
 const int kReconnectInterval = 3; // s
 const int kCleanTimeoutRequest = 1000; // ms
+const int kBufferSize = 5120;
 
 typedef void (*disconnect_event)();
 typedef void (*async_result_cb)(char* data, uint64_t size);
@@ -17,7 +18,7 @@ struct RpcRequestHdr
 {
     unsigned long long id;
     int data_size;
-    char* data;
+    char data[];
 };
 
 struct RequestValue

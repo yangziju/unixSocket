@@ -12,7 +12,7 @@ public:
 
     int Run();
 
-    void stop();
+    void Stop();
 
 protected:
 
