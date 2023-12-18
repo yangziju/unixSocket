@@ -3,20 +3,29 @@
 #include <thread>
 #include <mutex>
 #include <map>
+#include <functional>
 #include "domain_common.h"
 
 class UDSockClient
 {
+    using disconnect_event = std::function<void()>;
+    using async_result_cb = std::function<void(char* data, uint64_t size)>;
+
+    struct RequestValue
+    {
+        struct timespec time;
+        async_result_cb cbk;
+    };
 public:
     UDSockClient();
 
     ~UDSockClient();
 
-    int Init(const std::string server_addr, disconnect_event disconnect_fun);
+    int Init(const std::string server_addr, const disconnect_event& disconnect_fun);
 
     void Run();
 
-    int SendRequest(std::string& request, async_result_cb result_cbk);
+    int SendRequest(std::string& request, const async_result_cb& result_cbk);
 
     void Stop();
 
@@ -37,7 +46,7 @@ protected:
 
 private:
 
-    int buffer_size_;
+    uint32_t buffer_size_;
     int sock_;
     bool running_;
     sockaddr_un addr_;

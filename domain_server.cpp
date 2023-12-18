@@ -22,7 +22,7 @@ UDSockServer::~UDSockServer()
     unlink(address_.c_str());
 }
 
-int UDSockServer::Init(const std::string server_addr, response_fun on_response)
+int UDSockServer::Init(const std::string server_addr, const response_fun& on_response)
 {
     address_ = server_addr;
     on_response_ = on_response;
@@ -67,7 +67,7 @@ int UDSockServer::Init(const std::string server_addr, response_fun on_response)
         return ret;
     }
 
-    thread_ = std::thread(&UDSockServer::Run, this);
+    // thread_ = std::thread(&UDSockServer::Run, this);
 
     return 0;
 }

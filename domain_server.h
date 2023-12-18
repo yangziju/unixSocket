@@ -1,14 +1,16 @@
 #include <thread>
+#include <functional>
 #include "domain_common.h"
 
 class UDSockServer 
 {
+using response_fun = std::function<std::string(char* data, uint64_t size)>;
 public:
     UDSockServer();
 
     ~UDSockServer();
 
-    int Init(const std::string server_addr, response_fun on_response);
+    int Init(const std::string server_addr, const response_fun& on_response);
 
     int Run();
 

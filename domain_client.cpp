@@ -19,7 +19,7 @@ UDSockClient::~UDSockClient()
     }
 }
 
-int UDSockClient::Init(const std::string server_addr, disconnect_event disconnect_fun)
+int UDSockClient::Init(const std::string server_addr, const disconnect_event& disconnect_fun)
 {
     int ret = 0;
     on_disconnect = disconnect_fun;
@@ -59,18 +59,20 @@ int UDSockClient::ConnectServer()
     int ret = 0;
     if ((sock_ = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) 
     {
+        ret = -errno;
         std::cout << "udsock socket, create socket failed" << std::endl;
-        return -errno;
+        return ret;
     }
 
     struct timeval timeout;
-    timeout.tv_sec = 1;
-    timeout.tv_usec = 0;
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 100000;
 
     if (setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0) 
     {
+        ret = -errno;
         std::cout << "udsock setsockopt, set SO_RCVTIMEO failed" << std::endl;
-        return -errno;
+        return ret;
     }
 
     for (int retry = 1; retry <= kReConnectCount; retry++)
@@ -92,7 +94,6 @@ int UDSockClient::ConnectServer()
 void UDSockClient::Run()
 {
     RpcRequestHdr head;
-    uint64_t bytes_received = 0;
     running_ = true;
     char* reserve_buff = (char*)malloc(buffer_size_);
     if(!reserve_buff) 
@@ -173,7 +174,7 @@ void UDSockClient::Run()
     std::cout << "udsocket client thread exit" << std::endl;
 }
 
-int UDSockClient::SendRequest(std::string& request, async_result_cb result_cbk)
+int UDSockClient::SendRequest(std::string& request, const async_result_cb& result_cbk)
 {
     static unsigned long long request_id = 1;
     int ret = 0;
