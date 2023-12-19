@@ -110,8 +110,6 @@ void UDSockClient::Run()
             is_free = false;
         }
 
-        clean_timeout_requeset();
-
         if (sock_ == -1)
         {
             if(ConnectServer() < 0)
@@ -127,6 +125,7 @@ void UDSockClient::Run()
         {
             if (errno != EAGAIN && errno != EWOULDBLOCK)
                 CleanSocket("recv head");
+            clean_timeout_requeset();
             continue;
         }
 
@@ -148,6 +147,7 @@ void UDSockClient::Run()
         {
             if (errno != EAGAIN && errno != EWOULDBLOCK)
                 CleanSocket("recv body");
+            clean_timeout_requeset();
             continue;
         }
 
