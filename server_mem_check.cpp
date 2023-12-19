@@ -9,7 +9,7 @@ std::string do_sponse(char* data, uint64_t size)
 int main()
 {
     UDSockServer server;
-    if (server.Init(kServerAddress, do_sponse) < 0)
+    if (server.Init(kServerAddress, std::bind(&do_sponse, std::placeholders::_1, std::placeholders::_2)) < 0)
     {
         perror("init");
     }

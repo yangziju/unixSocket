@@ -36,7 +36,7 @@ void loop_send(UDSockClient& client)
     for(int i = 0; i < 1000; i++)
     {
         std::string req = generateRandomString(kBufferSize - 3, kBufferSize + 3);
-        if(client.SendRequest(req, do_respone) < 0) 
+        if(client.SendRequest(req, std::bind(&do_respone, std::placeholders::_1, std::placeholders::_2)) < 0) 
         {
             perror("send req failed");
         }
@@ -56,9 +56,9 @@ int main() {
             return 1;
         }
         std::thread threads[th_nums];
-        threads[0] = std::thread(&loop_send);
-        threads[1] = std::thread(&loop_send);
-        threads[2] = std::thread(&loop_send);
+        threads[0] = std::thread(&loop_send, std::ref(client));
+        threads[1] = std::thread(&loop_send, std::ref(client));
+        threads[2] = std::thread(&loop_send, std::ref(client));
         sleep(5);
         client.Stop();
         for (int i = 0; i < th_nums; i++)

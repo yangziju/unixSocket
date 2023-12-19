@@ -56,8 +56,8 @@ int UDSockClient::Init(const std::string server_addr, const disconnect_event& di
 
 int UDSockClient::ConnectServer()
 {
-    int ret = 0;
-    if ((sock_ = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) 
+    int ret = 0, tmp_sock;
+    if ((tmp_sock = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) 
     {
         ret = -errno;
         std::cout << "udsock socket, create socket failed" << std::endl;
@@ -68,7 +68,7 @@ int UDSockClient::ConnectServer()
     timeout.tv_sec = 0;
     timeout.tv_usec = 100000;
 
-    if (setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0) 
+    if (setsockopt(tmp_sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0) 
     {
         ret = -errno;
         std::cout << "udsock setsockopt, set SO_RCVTIMEO failed" << std::endl;
@@ -77,13 +77,14 @@ int UDSockClient::ConnectServer()
 
     for (int retry = 1; retry <= kReConnectCount; retry++)
     {
-        if (connect(sock_, (struct sockaddr*)&addr_, sizeof(addr_)) == -1) 
+        if (connect(tmp_sock, (struct sockaddr*)&addr_, sizeof(addr_)) == -1) 
         {
             std::cout << "connect server failed, retry count:" << retry << std::endl;
             sleep(kReconnectInterval);
             clean_timeout_requeset();
             continue;
         }
+        sock_ = tmp_sock;
         return 0;
     }
 
@@ -114,7 +115,6 @@ void UDSockClient::Run()
         {
             if(ConnectServer() < 0)
             {
-                CleanSocket("connect");
                 continue;
             }
         }
@@ -292,11 +292,9 @@ again:
             goto again;
         else
         {
-            std::cout << "send1 errno = " << errno << std::endl;
             return -1;
         }
     } else if (n == 0) {
-        std::cout << "send2 errno = " << errno << std::endl; 
         return -1;
     }
 
