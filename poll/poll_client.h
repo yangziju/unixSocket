@@ -6,7 +6,7 @@
 #include <functional>
 #include "poll_common.h"
 
-class UDSockClient
+class UDSockClient : public UDSockBase
 {
     using disconnect_event = std::function<void()>;
     using async_result_cb = std::function<void(char* data, uint64_t size)>;

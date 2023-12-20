@@ -2,21 +2,22 @@
 #include <functional>
 #include "poll_common.h"
 
-class UDSockServer 
+class UDSockServer : public UDSockBase
 {
-using ResultCbk = std::function<std::string(char* data, uint64_t size)>;
+using RequestCbk = std::function<std::string(char* data, uint64_t size)>;
 public:
     UDSockServer();
 
     ~UDSockServer();
 
-    bool Init(const std::string& server_addr, const ResultCbk& on_response);
+    bool Init(const std::string& server_addr, const RequestCbk& on_request);
 
     int Run();
 
     void Stop();
 
 protected:
+    bool Accept(struct pollfd* fds, int& maxi);
 
     int64_t RecvBytes(int fd, char* buff, int64_t nbytes);
 
@@ -29,5 +30,5 @@ private:
     std::thread thread_;
     bool running_;
     std::string address_;
-    ResultCbk on_response_;
+    RequestCbk on_request_;
 };

@@ -4,7 +4,6 @@
 #include <poll.h>
 #include <sys/un.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <assert.h>
 #include <cstring>
 #include "poll_server.h"
@@ -18,10 +17,10 @@ UDSockServer::~UDSockServer()
     unlink(address_.c_str());
 }
 
-bool UDSockServer::Init(const std::string& server_addr, const ResultCbk& on_response)
+bool UDSockServer::Init(const std::string& server_addr, const RequestCbk& on_request)
 {
     address_ = server_addr;
-    on_response_ = on_response;
+    on_request_ = on_request;
 
     lis_sock_ = socket(AF_UNIX, SOCK_STREAM, 0);
     if (-1 == lis_sock_)
@@ -30,17 +29,9 @@ bool UDSockServer::Init(const std::string& server_addr, const ResultCbk& on_resp
         return false;
     }
 
-    int flags = fcntl(lis_sock_, F_GETFL, 0);
-    if (flags == -1)
+    if (SetNonBlocking(lis_sock_) < 0)
     {
-        LOG_OUT("F_GETFL failed" , strerror(errno));
-        close(lis_sock_);
-        return false;
-    }
-
-    if (-1 == fcntl(lis_sock_, F_SETFL, flags | O_NONBLOCK))
-    {
-        LOG_OUT("F_SETFL failed" , strerror(errno));
+        LOG_OUT("SetNonBlocking failed" , strerror(errno));
         close(lis_sock_);
         return false;
     }
@@ -72,7 +63,7 @@ bool UDSockServer::Init(const std::string& server_addr, const ResultCbk& on_resp
     return true;
 }
 
-bool Accept(struct pollfd* fds, int& maxi)
+bool UDSockServer::Accept(struct pollfd* fds, int& maxi)
 {
     int pos = -1;
     int cfd = accept(fds[0].fd, NULL, NULL);
@@ -99,40 +90,34 @@ bool Accept(struct pollfd* fds, int& maxi)
         return false;
     }
 
-    int flags = fcntl(cfd, F_GETFL, 0);
-    if (flags == -1)
+    if (SetNonBlocking(cfd) < 0)
     {
-        LOG_OUT("F_GETFL failed" , strerror(errno));
-        close(cfd);
-        return false;
-    }
-
-    if (-1 == fcntl(cfd, F_SETFL, flags | O_NONBLOCK))
-    {
-        LOG_OUT("F_SETFL failed" , strerror(errno));
+        LOG_OUT("SetNonBlocking failed" , strerror(errno));
         close(cfd);
         return false;
     }
 
     if (i > maxi)
         maxi = i;
+
     fds[pos].fd = cfd;
     fds[pos].events = POLLIN;
 
-    LOG_OUT("client connected", "");
+    LOG_OUT("new client connected", "");
     return true;
 }
 
 int UDSockServer::Run()
 {
     struct RpcRequestHdr head;
+    int nready = 0, maxi = 0;
     struct pollfd fds[kMaxFiles];
+    char* buffer = new char[buffer_size_];
+
     for (int i = 0; i < kMaxFiles; i++)
         fds[i].fd = -1;
     fds[0].fd = lis_sock_;
     fds[0].events = POLLIN;
-    int nready = 0, maxi = 0;
-    char* buffer = new char[buffer_size_];
     running_ = true;
 
     while(running_)
@@ -160,7 +145,7 @@ int UDSockServer::Run()
                 {
                     if (RecvBytes(fds[i].fd, buffer, head.data_size) != -1)
                     {
-                        std::string data = on_response_(buffer, head.data_size);
+                        std::string data = on_request_(buffer, head.data_size);
                         head.data_size = data.size();
                         memcpy(buffer, &head, sizeof(RpcRequestHdr));
                         memcpy(buffer + sizeof(RpcRequestHdr), data.c_str(), data.size());
@@ -205,7 +190,7 @@ int64_t UDSockServer::RecvBytes(int fd, char* buff, int64_t nbytes)
 {
     int64_t n = 0;
 again:
-    n = recv(fd, (void*)buff, nbytes, 0);
+    n = recv(fd, (void*)buff, 1, 0);
     if (n == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
             goto again;

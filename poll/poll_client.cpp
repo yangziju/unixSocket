@@ -1,27 +1,11 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <poll.h>
-#include <fcntl.h>
 #include <errno.h>
 #include <cstring>
 #include <assert.h>
 #include "poll_client.h"
 
-int set_nonblocking(int sockfd) 
-{
-    int flags = fcntl(sockfd, F_GETFL, 0);
-    if (flags == -1) {
-        return -errno;
-    }
-
-    flags |= O_NONBLOCK;
-    
-    if (fcntl(sockfd, F_SETFL, flags) == -1) {
-        return -errno;
-    }
-
-    return 0;
-}
 
 UDSockClient::UDSockClient()
     :buffer_size_(kBufferSize), sock_(-1), running_(false) 
@@ -60,7 +44,7 @@ int UDSockClient::Init(const std::string server_addr, const disconnect_event& di
     //     return ret;
     // }
 
-    if (set_nonblocking(sock_) < 0)
+    if (SetNonBlocking(sock_) < 0)
     {
         ret = -errno;
         CleanSocket("set socket noblock");
@@ -93,7 +77,7 @@ int UDSockClient::ConnectServer()
     timeout.tv_sec = 0;
     timeout.tv_usec = 100000;
 
-    if (set_nonblocking(tmp_sock) < 0)
+    if (SetNonBlocking(tmp_sock) < 0)
     {
         ret = -errno;
         CleanSocket("set socket noblock");
@@ -221,7 +205,7 @@ int UDSockClient::SendRequest(std::string& request, const async_result_cb& resul
     return ret;
 }
 
-int UDSockClient::SendData(std::string& data, const )
+// int UDSockClient::SendData(std::string& data, const )
 
 void UDSockClient::Stop()
 {
@@ -299,6 +283,7 @@ int64_t UDSockClient::SendBytes(int fd, const char* buff, int64_t nbytes)
     int64_t n = 0;
 again:
     n = send(sock_, (void*)buff, nbytes, MSG_NOSIGNAL);
+    LOG_OUT("send bytes = " + std::to_string(nbytes), std::to_string(errno));
     if (n == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
             goto again;
@@ -309,7 +294,7 @@ again:
     } else if (n == 0) {
         return -1;
     }
-
+    sleep(1);
     buff += n;
     nbytes -= n;
     if (nbytes > 0) {
