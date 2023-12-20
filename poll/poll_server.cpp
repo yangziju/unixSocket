@@ -1,5 +1,3 @@
-#include <sys/socket.h>
-#include <sys/uio.h>
 #include <unistd.h>
 #include <poll.h>
 #include <sys/un.h>
@@ -63,7 +61,7 @@ bool UDSockServer::Init(const std::string& server_addr, const RequestCbk& on_req
     return true;
 }
 
-bool UDSockServer::Accept(struct pollfd* fds, int& maxi)
+bool UDSockServer::Accept(struct pollfd* fds, int& maxi, Buffer* buffs)
 {
     int pos = -1;
     int cfd = accept(fds[0].fd, NULL, NULL);
@@ -102,20 +100,22 @@ bool UDSockServer::Accept(struct pollfd* fds, int& maxi)
 
     fds[pos].fd = cfd;
     fds[pos].events = POLLIN;
+    buffs[pos].AllocMem(buffer_size_);
 
     LOG_OUT("new client connected", "");
     return true;
 }
 
+
 int UDSockServer::Run()
 {
-    struct RpcRequestHdr head;
     int nready = 0, maxi = 0;
     struct pollfd fds[kMaxFiles];
-    char* buffer = new char[buffer_size_];
+    Buffer buffs[kMaxFiles];
 
     for (int i = 0; i < kMaxFiles; i++)
         fds[i].fd = -1;
+
     fds[0].fd = lis_sock_;
     fds[0].events = POLLIN;
     running_ = true;
@@ -126,7 +126,7 @@ int UDSockServer::Run()
         if (fds[0].revents & POLLIN)
         {
             --nready;
-            Accept(fds, maxi);
+            Accept(fds, maxi, buffs);
         }
         for (int i = 1; i <= maxi && nready > 0; i++)
         {
@@ -134,43 +134,77 @@ int UDSockServer::Run()
 
             if (fds[i].revents & POLLIN)
             {
+                char *s = buffs[i].s, *e = buffs[i].e, *buf = buffs[i].buf;
                 --nready;
-                int ret = RecvBytes(fds[i].fd, (char*)&head, sizeof(RpcRequestHdr));
-                if (ret == -1)
+                int32_t pit_size = buffer_size_ - (e - buf);
+                if (pit_size == 0) 
+                {
+                    std::cout << "s = " << *s << " e - s = " << (e - s) << " buf = " << *buf << " pit_size = " << pit_size << "buf size = " << buffer_size_ << std::endl;
+                    sleep(1);
+                    continue;
+                }
+                // std::cout << "s = " << *s << " e - s = " << (e - s) << " buf = " << *buf << " pit_size = " << pit_size << "buf size = " << buffer_size_ << std::endl;
+                int nread = RecvData(fds[i].fd, e, pit_size);
+                if (nread == -1)
                 {
                     LOG_OUT("read head failed", std::to_string(errno));
                     CLOSE_FD(fds[i].fd);
                 }
-                if (ret != -1 && head.data_size > 0)
+                else
                 {
-                    if (RecvBytes(fds[i].fd, buffer, head.data_size) != -1)
+                    // 解析包体
+                    e += nread;
+                    while((e - s) > sizeof(RpcRequestHdr))
                     {
-                        std::string data = on_request_(buffer, head.data_size);
-                        head.data_size = data.size();
-                        memcpy(buffer, &head, sizeof(RpcRequestHdr));
-                        memcpy(buffer + sizeof(RpcRequestHdr), data.c_str(), data.size());
-                        if(SendBytes(fds[i].fd, buffer, data.size() + sizeof(RpcRequestHdr)) < 0)
+                        RpcRequestHdr* head = reinterpret_cast<RpcRequestHdr*>(s);
+                        uint64_t req_size = head->data_size + sizeof(RpcRequestHdr);
+                        if (req_size <= (e - s))
                         {
-                            LOG_OUT("send data failed", strerror(errno));
-                            CLOSE_FD(fds[i].fd);
+                            std::string data = on_request_(s, head->data_size);
+                            head->data_size = data.size();
+                            if (WriteVec(fds[i].fd, s, sizeof(RpcRequestHdr), s + sizeof(RpcRequestHdr), head->data_size) == -1)
+                            {
+                                LOG_OUT("send data failed", strerror(errno));
+                                e = s = buf;
+                                CLOSE_FD(fds[i].fd);
+                                break;
+                            }
+                    
+                            s += req_size;
                         }
-                    } else {
-                        LOG_OUT("read body failed", strerror(errno));
-                        CLOSE_FD(fds[i].fd);
+                        else
+                        {
+                            break;
+                        }
+                    }
+
+                    if (fds[i].fd != -1)
+                    {
+                        memcpy(buf, s, e - s);
+                        buffs[i].SavePos(buf, buf + (e - s));
+                    }
+                    else
+                    {
+                        buffs[i].Clean();
                     }
                 }
             } 
             else if (fds[i].revents & (POLLERR | POLLHUP))
             {
                 --nready;
+                buffs[i].Clean();
                 LOG_OUT("POLLERR | POLLHUP event", strerror(errno));
                 CLOSE_FD(fds[i].fd);
             }
         }
     }
-    if (buffer)
-        delete buffer;
 
+    for (int i = 0; i < kMaxFiles; i++)
+    {
+        CLOSE_FD(fds[i].fd);
+        buffs[i].Clean();
+    }
+        
     LOG_OUT("udsocket server thread exit", "");
 
     return 0;
@@ -186,47 +220,6 @@ void UDSockServer::Stop()
     }
 }
 
-int64_t UDSockServer::RecvBytes(int fd, char* buff, int64_t nbytes)
-{
-    int64_t n = 0;
-again:
-    n = recv(fd, (void*)buff, 1, 0);
-    if (n == -1) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-            goto again;
-        else
-            return -1;
-    } else if (n == 0) {
-        return -1;
-    }
-    buff += n;
-    nbytes -= n;
-    if (nbytes > 0) {
-        goto again;
-    }
-    assert(nbytes == 0);
-    return nbytes;
-}
 
-int64_t UDSockServer::SendBytes(int fd, const char* buff, int64_t nbytes)
-{
-    int64_t n = 0;
-again:
-    n = send(fd, (void*)buff, nbytes, MSG_NOSIGNAL);
-    if (n == -1) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-            goto again;
-        else
-            return -1;
-    } else if (n == 0) {
-        return -1;
-    }
 
-    buff += n;
-    nbytes -= n;
-    if (nbytes > 0) {
-        goto again;
-    }
-    assert(nbytes == 0);
-    return nbytes;
-}
+

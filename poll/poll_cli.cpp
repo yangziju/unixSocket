@@ -1,9 +1,9 @@
 #include <iostream>
 #include "poll_client.h"
 int g_sleep_us = 0;
-
+int g_cnt = 100;
 // #define EABLEABLE_REQUET_LOG
-
+#define ENABLE_TIPS_LOG
 void disconn_event()
 {
     std::cout << "server quit...!!!" << std::endl;
@@ -15,12 +15,15 @@ void do_respone1(char* resp_buff, uint64_t size)
     std::string data(resp_buff, size);
     uint64_t recv_id = std::stoll(data);
     if (recv_id == expect_id) {
-        // if (expect_id % 1000 == 0) 
-        //     std::cout << "th1 success, id = " << expect_id << std::endl;
+        #ifdef ENABLE_TIPS_LOG
+        if (expect_id % g_cnt == 0) 
+            std::cout << "th1 success, id = " << expect_id << std::endl;
+        #endif
     } else {
-        std::cout << "th1 expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
+        std::cout << "[ERROR] th1 expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
     }
-    expect_id = recv_id + 1;
+    // expect_id = recv_id + 1;
+    expect_id++;
 }
 
 void loop_send1(UDSockClient& client)
@@ -47,12 +50,15 @@ void do_respone2(char* resp_buff, uint64_t size)
     std::string data(resp_buff, size);
     uint64_t recv_id = std::stoll(data);
     if (recv_id == expect_id) {
-        // if (expect_id % 1000 == 0) 
-        //     std::cout << "th2 success, id = " << expect_id << std::endl;
+        #ifdef ENABLE_TIPS_LOG
+        if (expect_id % g_cnt == 0) 
+            std::cout << "th2 success, id = " << expect_id << std::endl;
+        #endif
     } else {
-        std::cout << "th2 expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
+        std::cout << "[ERROR] th2 expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
     }
-    expect_id = recv_id + 1;
+    // expect_id = recv_id + 1;
+    expect_id++;
 }
 
 void loop_send2(UDSockClient& client)
@@ -78,12 +84,15 @@ void do_respone3(char* resp_buff, uint64_t size)
     std::string data(resp_buff, size);
     uint64_t recv_id = std::stoll(data);
     if (recv_id == expect_id) {
-        // if (expect_id % 1000 == 0) 
-        //     std::cout << "th3 success, id = " << expect_id << std::endl;
+        #ifdef ENABLE_TIPS_LOG
+        if (expect_id % g_cnt == 0) 
+            std::cout << "th3 success, id = " << expect_id << std::endl;
+        #endif
     } else {
-        std::cout << "th3 expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
+        std::cout << "[ERROR] th3 expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
     }
-    expect_id = recv_id + 1;
+    // expect_id = recv_id + 1;
+    expect_id++;
 }
 
 void loop_send3(UDSockClient& client)

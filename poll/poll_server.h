@@ -2,9 +2,10 @@
 #include <functional>
 #include "poll_common.h"
 
-class UDSockServer : public UDSockBase
+class UDSockServer : protected UDSockBase
 {
 using RequestCbk = std::function<std::string(char* data, uint64_t size)>;
+
 public:
     UDSockServer();
 
@@ -17,11 +18,8 @@ public:
     void Stop();
 
 protected:
-    bool Accept(struct pollfd* fds, int& maxi);
 
-    int64_t RecvBytes(int fd, char* buff, int64_t nbytes);
-
-    int64_t SendBytes(int fd, const char* buff, int64_t nbytes);
+    bool Accept(struct pollfd* fds, int& maxi, Buffer* buffs);
 
 private:
 

@@ -9,12 +9,12 @@
 class UDSockClient
 {
     using disconnect_event = std::function<void()>;
-    using async_result_cb = std::function<void(char* data, uint64_t size)>;
+    using ResponseCbk = std::function<void(char* data, uint64_t size)>;
 
     struct RequestValue
     {
         struct timespec time;
-        async_result_cb cbk;
+        ResponseCbk cbk;
     };
 public:
     UDSockClient();
@@ -25,7 +25,7 @@ public:
 
     void Run();
 
-    int SendRequest(std::string& request, const async_result_cb& result_cbk);
+    int SendRequest(std::string& request, const ResponseCbk& result_cbk);
 
     void Stop();
 
@@ -34,7 +34,7 @@ public:
 protected:
     inline int64_t diff_ms(struct timespec& start, struct timespec& now);
 
-    inline void clean_timeout_requeset();
+    inline void CleanTimeoutRequest();
 
     void CleanSocket(std::string str);
 

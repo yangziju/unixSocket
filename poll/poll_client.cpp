@@ -1,4 +1,3 @@
-#include <sys/socket.h>
 #include <unistd.h>
 #include <poll.h>
 #include <errno.h>
@@ -36,13 +35,6 @@ int UDSockClient::Init(const std::string server_addr, const disconnect_event& di
     struct timeval timeout;
     timeout.tv_sec = 1;
     timeout.tv_usec = 0;
-
-    // if (setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) == -1) 
-    // {
-    //     ret = -errno;
-    //     CleanSocket("init");
-    //     return ret;
-    // }
 
     if (SetNonBlocking(sock_) < 0)
     {
@@ -91,7 +83,7 @@ int UDSockClient::ConnectServer()
         {
             std::cout << "connect server failed, retry count:" << retry << std::endl;
             sleep(kReconnectInterval);
-            clean_timeout_requeset();
+            CleanTimeoutRequest();
             continue;
         }
         sock_ = tmp_sock;
@@ -102,8 +94,8 @@ int UDSockClient::ConnectServer()
 
 void UDSockClient::Run()
 {
-    RpcRequestHdr head;
-    char* buffer = new char[buffer_size_];
+    Buffer buffer;
+    buffer.AllocMem(buffer_size_);
 
     struct pollfd pfd;
     pfd.fd = sock_;
@@ -114,66 +106,115 @@ void UDSockClient::Run()
     {
         if (sock_ == -1)
         {
-            if (ConnectServer() < 0) 
-                continue;
-            else 
+            if (ConnectServer() == 0) 
+            {
                 pfd.fd = sock_;
+            }
+            else 
+                continue;
         }
 
         if (poll(&pfd, 1, -1) == -1)
         {
             CLOSE_FD(sock_);
-            clean_timeout_requeset();
+            CleanTimeoutRequest();
             continue;
         }
 
         if (pfd.revents & POLLIN)
         {
-            int ret = RecvBytes(sock_, (char*)&head, sizeof(RpcRequestHdr));
-            if (ret == -1)
+            char *s = buffer.s, *e = buffer.e, *buf = buffer.buf;
+            int32_t pit_size = buffer_size_ - (e - buf);
+            if (pit_size == 0) 
+            {
+                std::cout << "s = " << *s << " e - s = " << (e - s) << " buf = " << *buf << " pit_size = " << pit_size << "buf size = " << buffer_size_ << std::endl;
+                sleep(1);
+                continue;
+            }
+            int nread = RecvData(sock_, e, pit_size);
+            if (nread == -1)
             {
                 LOG_OUT("read head failed", std::to_string(errno));
+                CleanTimeoutRequest();
                 CLOSE_FD(sock_);
             }
-            if (ret != -1 && head.data_size > 0)
+            else
             {
-                if (RecvBytes(sock_, buffer, head.data_size) != -1)
+                // 解析包体
+                e += nread;
+                while((e - s) > sizeof(RpcRequestHdr))
                 {
+                    RpcRequestHdr* head = reinterpret_cast<RpcRequestHdr*>(s);
+                    uint64_t req_size = head->data_size + sizeof(RpcRequestHdr);
+                    if (req_size <= (e - s))
                     {
-                        std::lock_guard<std::mutex> _(lock_req_);
-                        auto it = request_.find(head.id);
-                        if (it != request_.end())
                         {
-                            it->second.cbk(buffer, head.data_size);
-                            request_.erase(head.id);
+                            std::lock_guard<std::mutex> _(lock_req_);
+                            auto it = request_.find(head->id);
+                            if (it != request_.end())
+                            {
+                                it->second.cbk(s + sizeof(RpcRequestHdr), head->data_size);
+                                request_.erase(head->id);
+                            }
                         }
+                        s += req_size;
                     }
-                } else {
-                    LOG_OUT("read body failed", strerror(errno));
-                    CLOSE_FD(sock_);
+                    else
+                    {
+                        break;
+                    }
                 }
+                memcpy(buf, s, e - s);
+                buffer.SavePos(buf, buf + (e - s));
             }
         }
         else if (pfd.revents & (POLLERR | POLLHUP))
         {
             LOG_OUT("POLLERR | POLLHUP", strerror(errno));
-            clean_timeout_requeset();
+            CleanTimeoutRequest();
+            buffer.SavePos(buffer.buf, buffer.buf);
             CLOSE_FD(sock_);
         }
     }
 
-    if (buffer)
-        delete buffer;
+    buffer.Clean();
 
     std::cout << "udsocket client thread exit" << std::endl;
 }
 
-int UDSockClient::SendRequest(std::string& request, const async_result_cb& result_cbk)
+int UDSockClient::SendRequest(std::string& request, const ResponseCbk& response_cbk)
+{
+    static unsigned long long request_id = 1;
+    RpcRequestHdr head;
+    RequestValue value;
+
+    value.cbk = response_cbk;
+    clock_gettime(CLOCK_REALTIME, &value.time);
+    head.data_size = request.size();
+    {
+        std::lock_guard<std::mutex> _(lock_req_);
+        head.id = request_id++;
+        request_.insert(std::make_pair(head.id, value));
+    }
+
+    {
+        std::lock_guard<std::mutex> _(lock_send_);
+        if (WriteVec(sock_, &head, sizeof(RpcRequestHdr), (void*)request.c_str(), request.size()) == -1)
+        {
+            return -errno;
+        }
+    }
+
+    return 0;
+}
+
+#if 0
+int UDSockClient::SendRequest(std::string& request, const ResponseCbk& response_cbk)
 {
     static unsigned long long request_id = 1;
     int ret = 0;
     RequestValue value;
-    value.cbk = result_cbk;
+    value.cbk = response_cbk;
     clock_gettime(CLOCK_REALTIME, &value.time);
 
     int buff_size = sizeof(RpcRequestHdr) + request.size();
@@ -204,8 +245,7 @@ int UDSockClient::SendRequest(std::string& request, const async_result_cb& resul
 
     return ret;
 }
-
-// int UDSockClient::SendData(std::string& data, const )
+#endif
 
 void UDSockClient::Stop()
 {
@@ -223,7 +263,7 @@ inline uint64_t diff_ms(const struct timespec& start, const struct timespec& now
     return (now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000;
 }
 
-void UDSockClient::clean_timeout_requeset()
+void UDSockClient::CleanTimeoutRequest()
 {
     struct timespec now;
     clock_gettime(CLOCK_REALTIME, &now);
@@ -254,52 +294,5 @@ void UDSockClient::CleanSocket(std::string str)
     }
 }
 
-int64_t UDSockClient::RecvBytes(int fd, char* buff, int64_t nbytes)
-{
-    int64_t n = 0;
-again:
-    n = recv(sock_, (void*)buff, nbytes, 0);
-    if (n == -1) {
-        if (errno == EINTR)
-            goto again;
-        else
-            return -1;
-    } else if (n == 0) {
-        errno = ENOTCONN;
-        return -1;
-    }
 
-    buff += n;
-    nbytes -= n;
-    if (nbytes > 0) {
-        goto again;
-    }
-    assert(nbytes == 0);
-    return nbytes;
-}
 
-int64_t UDSockClient::SendBytes(int fd, const char* buff, int64_t nbytes)
-{
-    int64_t n = 0;
-again:
-    n = send(sock_, (void*)buff, nbytes, MSG_NOSIGNAL);
-    LOG_OUT("send bytes = " + std::to_string(nbytes), std::to_string(errno));
-    if (n == -1) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-            goto again;
-        else
-        {
-            return -1;
-        }
-    } else if (n == 0) {
-        return -1;
-    }
-    sleep(1);
-    buff += n;
-    nbytes -= n;
-    if (nbytes > 0) {
-        goto again;
-    }
-    assert(nbytes == 0);
-    return nbytes;
-}

@@ -81,7 +81,7 @@ int UDSockClient::ConnectServer()
         {
             std::cout << "connect server failed, retry count:" << retry << std::endl;
             sleep(kReconnectInterval);
-            clean_timeout_requeset();
+            CleanTimeoutRequest();
             continue;
         }
         sock_ = tmp_sock;
@@ -123,7 +123,7 @@ void UDSockClient::Run()
         {
             if (errno != EAGAIN && errno != EWOULDBLOCK)
                 CleanSocket("recv head");
-            clean_timeout_requeset();
+            CleanTimeoutRequest();
             continue;
         }
 
@@ -145,7 +145,7 @@ void UDSockClient::Run()
         {
             if (errno != EAGAIN && errno != EWOULDBLOCK)
                 CleanSocket("recv body");
-            clean_timeout_requeset();
+            CleanTimeoutRequest();
             continue;
         }
 
@@ -172,7 +172,7 @@ void UDSockClient::Run()
     std::cout << "udsocket client thread exit" << std::endl;
 }
 
-int UDSockClient::SendRequest(std::string& request, const async_result_cb& result_cbk)
+int UDSockClient::SendRequest(std::string& request, const ResponseCbk& result_cbk)
 {
     static unsigned long long request_id = 1;
     int ret = 0;
@@ -225,7 +225,7 @@ inline int64_t UDSockClient::diff_ms(struct timespec& start, struct timespec& no
     return (now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000;
 }
 
-inline void UDSockClient::clean_timeout_requeset()
+inline void UDSockClient::CleanTimeoutRequest()
 {
     struct timespec now;
     clock_gettime(CLOCK_REALTIME, &now);

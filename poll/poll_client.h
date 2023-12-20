@@ -6,16 +6,17 @@
 #include <functional>
 #include "poll_common.h"
 
-class UDSockClient : public UDSockBase
+class UDSockClient : protected UDSockBase
 {
     using disconnect_event = std::function<void()>;
-    using async_result_cb = std::function<void(char* data, uint64_t size)>;
+    using ResponseCbk = std::function<void(char* data, uint64_t size)>;
 
     struct RequestValue
     {
         struct timespec time;
-        async_result_cb cbk;
+        ResponseCbk cbk;
     };
+
 public:
     UDSockClient();
 
@@ -25,7 +26,7 @@ public:
 
     void Run();
 
-    int SendRequest(std::string& request, const async_result_cb& result_cbk);
+    int SendRequest(std::string& request, const ResponseCbk& result_cbk);
 
     void Stop();
 
@@ -33,15 +34,11 @@ public:
 
 protected:
 
-    void clean_timeout_requeset();
+    void CleanTimeoutRequest();
 
     void CleanSocket(std::string str);
 
     int ConnectServer();
-
-    int64_t RecvBytes(int fd, char* buff, int64_t nbytes);
-
-    int64_t SendBytes(int fd, const char* buff, int64_t nbytes);
 
 private:
 
