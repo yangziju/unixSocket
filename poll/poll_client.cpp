@@ -1,9 +1,27 @@
 #include <sys/socket.h>
 #include <unistd.h>
+#include <poll.h>
+#include <fcntl.h>
 #include <errno.h>
 #include <cstring>
 #include <assert.h>
-#include "domain_client.h"
+#include "poll_client.h"
+
+int set_nonblocking(int sockfd) 
+{
+    int flags = fcntl(sockfd, F_GETFL, 0);
+    if (flags == -1) {
+        return -errno;
+    }
+
+    flags |= O_NONBLOCK;
+    
+    if (fcntl(sockfd, F_SETFL, flags) == -1) {
+        return -errno;
+    }
+
+    return 0;
+}
 
 UDSockClient::UDSockClient()
     :buffer_size_(kBufferSize), sock_(-1), running_(false) 
@@ -35,10 +53,17 @@ int UDSockClient::Init(const std::string server_addr, const disconnect_event& di
     timeout.tv_sec = 1;
     timeout.tv_usec = 0;
 
-    if (setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) == -1) 
+    // if (setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) == -1) 
+    // {
+    //     ret = -errno;
+    //     CleanSocket("init");
+    //     return ret;
+    // }
+
+    if (set_nonblocking(sock_) < 0)
     {
         ret = -errno;
-        CleanSocket("init");
+        CleanSocket("set socket noblock");
         return ret;
     }
 
@@ -68,13 +93,14 @@ int UDSockClient::ConnectServer()
     timeout.tv_sec = 0;
     timeout.tv_usec = 100000;
 
-    if (setsockopt(tmp_sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0) 
+    if (set_nonblocking(tmp_sock) < 0)
     {
         ret = -errno;
-        std::cout << "udsock setsockopt, set SO_RCVTIMEO failed" << std::endl;
+        CleanSocket("set socket noblock");
         return ret;
     }
 
+    on_disconnect();
     for (int retry = 1; retry <= kReConnectCount; retry++)
     {
         if (connect(tmp_sock, (struct sockaddr*)&addr_, sizeof(addr_)) == -1) 
@@ -87,89 +113,73 @@ int UDSockClient::ConnectServer()
         sock_ = tmp_sock;
         return 0;
     }
-
-    on_disconnect();
     return -ECONNREFUSED;
 }
 
 void UDSockClient::Run()
 {
     RpcRequestHdr head;
+    char* buffer = new char[buffer_size_];
+
+    struct pollfd pfd;
+    pfd.fd = sock_;
+    pfd.events = POLLIN;
     running_ = true;
-    char* reserve_buff = (char*)malloc(buffer_size_);
-    if(!reserve_buff) 
-        return;
-    char* recv_buff = reserve_buff;
-    bool is_free = false;
 
     while(running_)
     {
-        if (is_free)
-        {
-            free(recv_buff);
-            recv_buff = reserve_buff;
-            is_free = false;
-        }
-
         if (sock_ == -1)
         {
-            if(ConnectServer() < 0)
-            {
+            if (ConnectServer() < 0) 
                 continue;
-            }
+            else 
+                pfd.fd = sock_;
         }
 
-        bzero(&head, sizeof(head));
-
-        if (RecvBytes((char*)&head, sizeof(RpcRequestHdr)) < 0)
+        if (poll(&pfd, 1, -1) == -1)
         {
-            if (errno != EAGAIN && errno != EWOULDBLOCK)
-                CleanSocket("recv head");
+            CLOSE_FD(sock_);
             clean_timeout_requeset();
             continue;
         }
 
-        if (head.data_size == 0) continue;
-
-        if (buffer_size_ < head.data_size)
+        if (pfd.revents & POLLIN)
         {
-            if (!(recv_buff = (char*)malloc(head.data_size)))
+            int ret = RecvBytes(sock_, (char*)&head, sizeof(RpcRequestHdr));
+            if (ret == -1)
             {
-                std::cout << "domain socket, malloc failed" << std::endl;
-                recv_buff = reserve_buff;
-                continue;
+                LOG_OUT("read head failed", std::to_string(errno));
+                CLOSE_FD(sock_);
             }
-            is_free = true;
+            if (ret != -1 && head.data_size > 0)
+            {
+                if (RecvBytes(sock_, buffer, head.data_size) != -1)
+                {
+                    {
+                        std::lock_guard<std::mutex> _(lock_req_);
+                        auto it = request_.find(head.id);
+                        if (it != request_.end())
+                        {
+                            it->second.cbk(buffer, head.data_size);
+                            request_.erase(head.id);
+                        }
+                    }
+                } else {
+                    LOG_OUT("read body failed", strerror(errno));
+                    CLOSE_FD(sock_);
+                }
+            }
         }
-
-        bzero(recv_buff, head.data_size);
-        if (RecvBytes(recv_buff, head.data_size) < 0)
+        else if (pfd.revents & (POLLERR | POLLHUP))
         {
-            if (errno != EAGAIN && errno != EWOULDBLOCK)
-                CleanSocket("recv body");
+            LOG_OUT("POLLERR | POLLHUP", strerror(errno));
             clean_timeout_requeset();
-            continue;
-        }
-
-        {
-            std::lock_guard<std::mutex> _(lock_req_);
-            auto it = request_.find(head.id);
-            if (it != request_.end())
-            {
-                it->second.cbk((char*)recv_buff, head.data_size);
-                request_.erase(head.id);
-            }
+            CLOSE_FD(sock_);
         }
     }
-    if (reserve_buff)
-    {
-        free(reserve_buff);
-    }
 
-    if (is_free)
-    {
-        free(recv_buff);
-    }
+    if (buffer)
+        delete buffer;
 
     std::cout << "udsocket client thread exit" << std::endl;
 }
@@ -201,7 +211,7 @@ int UDSockClient::SendRequest(std::string& request, const async_result_cb& resul
 
     {
         std::lock_guard<std::mutex> _(lock_send_);
-        if (SendBytes(send_buff, buff_size) == -1)
+        if (SendBytes(sock_, send_buff, buff_size) == -1)
         {
             ret = -errno;
         }
@@ -210,6 +220,8 @@ int UDSockClient::SendRequest(std::string& request, const async_result_cb& resul
 
     return ret;
 }
+
+int UDSockClient::SendData(std::string& data, const )
 
 void UDSockClient::Stop()
 {
@@ -222,12 +234,12 @@ void UDSockClient::Stop()
 }
 
 
-inline int64_t UDSockClient::diff_ms(struct timespec& start, struct timespec& now)
+inline uint64_t diff_ms(const struct timespec& start, const struct timespec& now)
 {
     return (now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000;
 }
 
-inline void UDSockClient::clean_timeout_requeset()
+void UDSockClient::clean_timeout_requeset()
 {
     struct timespec now;
     clock_gettime(CLOCK_REALTIME, &now);
@@ -250,15 +262,15 @@ bool UDSockClient::IsConnected()
 
 void UDSockClient::CleanSocket(std::string str)
 {
-    std::cout << "DEBUG " << str << " errno = " << errno << std::endl;
     if (sock_ != -1)
     {
+        std::cout << str << " close fd, errno = " << errno << std::endl;
         close(sock_);
         sock_ = -1;
     }
 }
 
-int64_t UDSockClient::RecvBytes(char* buff, int64_t nbytes)
+int64_t UDSockClient::RecvBytes(int fd, char* buff, int64_t nbytes)
 {
     int64_t n = 0;
 again:
@@ -282,7 +294,7 @@ again:
     return nbytes;
 }
 
-int64_t UDSockClient::SendBytes(const char* buff, int64_t nbytes)
+int64_t UDSockClient::SendBytes(int fd, const char* buff, int64_t nbytes)
 {
     int64_t n = 0;
 again:
