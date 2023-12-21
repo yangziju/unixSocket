@@ -6,23 +6,17 @@
 #include <functional>
 #include "poll_common.h"
 
-class UDSockClient : protected UDSockBase
+class UDSockClient : protected SockIO
 {
-    using disconnect_event = std::function<void()>;
+    using OnDisconnct = std::function<void()>;
     using ResponseCbk = std::function<void(char* data, uint64_t size)>;
-
-    struct RequestValue
-    {
-        struct timespec time;
-        ResponseCbk cbk;
-    };
 
 public:
     UDSockClient();
 
     ~UDSockClient();
 
-    int Init(const std::string server_addr, const disconnect_event& disconnect_fun);
+    bool Init(const std::string& server_addr, const OnDisconnct& on_disconn);
 
     void Run();
 
@@ -34,22 +28,20 @@ public:
 
 protected:
 
-    void CleanTimeoutRequest();
+    inline void CleanRequest();
 
-    void CleanSocket(std::string str);
-
-    int ConnectServer();
+    bool ConnectServer();
 
 private:
 
     uint32_t buffer_size_;
     int sock_;
-    bool running_;
     sockaddr_un addr_;
-    disconnect_event on_disconnect;
+    OnDisconnct on_disconn_;
     std::mutex lock_send_;
     std::thread thread_;
+    volatile bool running_;
 
     std::mutex lock_req_;
-    std::map<unsigned long long, RequestValue> request_;
+    std::map<uint64_t, ResponseCbk> request_;
 };

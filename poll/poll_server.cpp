@@ -6,8 +6,12 @@
 #include <cstring>
 #include "poll_server.h"
 
+const int kHeadSize = sizeof(RpcRequestHdr);
+
 UDSockServer::UDSockServer() : lis_sock_(-1), buffer_size_(kBufferSize), running_(false)
-{}
+{
+
+}
 
 UDSockServer::~UDSockServer()
 {
@@ -56,7 +60,7 @@ bool UDSockServer::Init(const std::string& server_addr, const RequestCbk& on_req
         return false;
     }
 
-    // thread_ = std::thread(&UDSockServer::Run, this);
+    thread_ = std::thread(&UDSockServer::Run, this);
 
     return true;
 }
@@ -122,10 +126,12 @@ int UDSockServer::Run()
 
     while(running_)
     {
-        nready = poll(fds, maxi + 1, -1);
+        nready = poll(fds, maxi + 1, 1);
+        std::cout << "nready " << nready << std::endl;
         if (fds[0].revents & POLLIN)
         {
             --nready;
+            std::cout << "accept " << std::endl;
             Accept(fds, maxi, buffs);
         }
         for (int i = 1; i <= maxi && nready > 0; i++)
@@ -148,25 +154,25 @@ int UDSockServer::Run()
                 if (nread == -1)
                 {
                     LOG_OUT("read head failed", std::to_string(errno));
-                    CLOSE_FD(fds[i].fd);
+                    // CLOSE_FD(fds[i].fd);
                 }
                 else
                 {
                     // 解析包体
                     e += nread;
-                    while((e - s) > sizeof(RpcRequestHdr))
+                    while((e - s) > kHeadSize)
                     {
                         RpcRequestHdr* head = reinterpret_cast<RpcRequestHdr*>(s);
-                        uint64_t req_size = head->data_size + sizeof(RpcRequestHdr);
+                        int32_t req_size = head->data_size + kHeadSize;
                         if (req_size <= (e - s))
                         {
                             std::string data = on_request_(s, head->data_size);
                             head->data_size = data.size();
-                            if (WriteVec(fds[i].fd, s, sizeof(RpcRequestHdr), s + sizeof(RpcRequestHdr), head->data_size) == -1)
+                            if (WriteVec(fds[i].fd, s, kHeadSize, s + kHeadSize, head->data_size) == -1)
                             {
                                 LOG_OUT("send data failed", strerror(errno));
                                 e = s = buf;
-                                CLOSE_FD(fds[i].fd);
+                                // CLOSE_FD(fds[i].fd);
                                 break;
                             }
                     
@@ -189,11 +195,15 @@ int UDSockServer::Run()
                     }
                 }
             } 
-            else if (fds[i].revents & (POLLERR | POLLHUP))
+            if (fds[i].revents & (POLLERR | POLLHUP))
             {
                 --nready;
+                if (fds[i].revents & POLLERR)
+                    LOG_OUT("POLLERR event", strerror(errno));
+                else
+                    LOG_OUT("POLLHUP event", strerror(errno));
+
                 buffs[i].Clean();
-                LOG_OUT("POLLERR | POLLHUP event", strerror(errno));
                 CLOSE_FD(fds[i].fd);
             }
         }
@@ -219,7 +229,4 @@ void UDSockServer::Stop()
         thread_.join();
     }
 }
-
-
-
 

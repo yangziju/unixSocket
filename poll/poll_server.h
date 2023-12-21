@@ -2,7 +2,7 @@
 #include <functional>
 #include "poll_common.h"
 
-class UDSockServer : protected UDSockBase
+class UDSockServer : protected SockIO
 {
 using RequestCbk = std::function<std::string(char* data, uint64_t size)>;
 
@@ -26,7 +26,7 @@ private:
     int lis_sock_;
     uint32_t buffer_size_;
     std::thread thread_;
-    bool running_;
     std::string address_;
     RequestCbk on_request_;
+    volatile bool running_;
 };

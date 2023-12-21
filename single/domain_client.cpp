@@ -284,7 +284,7 @@ int64_t UDSockClient::SendBytes(const char* buff, int64_t nbytes)
 {
     int64_t n = 0;
 again:
-    n = send(sock_, (void*)buff, nbytes, MSG_NOSIGNAL);
+    n = send(sock_, (void*)buff, 1, MSG_NOSIGNAL);
     if (n == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
             goto again;
@@ -295,7 +295,7 @@ again:
     } else if (n == 0) {
         return -1;
     }
-
+    // usleep(10);
     buff += n;
     nbytes -= n;
     if (nbytes > 0) {

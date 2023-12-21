@@ -1,7 +1,7 @@
 #include <iostream>
 #include "poll_client.h"
 int g_sleep_us = 0;
-int g_cnt = 100;
+int g_cnt = 1000;
 // #define EABLEABLE_REQUET_LOG
 #define ENABLE_TIPS_LOG
 void disconn_event()
@@ -20,10 +20,10 @@ void do_respone1(char* resp_buff, uint64_t size)
             std::cout << "th1 success, id = " << expect_id << std::endl;
         #endif
     } else {
-        std::cout << "[ERROR] th1 expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
+        std::cout << "[ERROR] th1 expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << data << std::endl;
     }
-    // expect_id = recv_id + 1;
-    expect_id++;
+    expect_id = recv_id + 1;
+    // expect_id++;
 }
 
 void loop_send1(UDSockClient& client)
@@ -55,10 +55,10 @@ void do_respone2(char* resp_buff, uint64_t size)
             std::cout << "th2 success, id = " << expect_id << std::endl;
         #endif
     } else {
-        std::cout << "[ERROR] th2 expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
+        std::cout << "[ERROR] th2 expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << data << std::endl;
     }
-    // expect_id = recv_id + 1;
-    expect_id++;
+    expect_id = recv_id + 1;
+    // expect_id++;
 }
 
 void loop_send2(UDSockClient& client)
@@ -89,10 +89,10 @@ void do_respone3(char* resp_buff, uint64_t size)
             std::cout << "th3 success, id = " << expect_id << std::endl;
         #endif
     } else {
-        std::cout << "[ERROR] th3 expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
+        std::cout << "[ERROR] th3 expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << data << std::endl;
     }
-    // expect_id = recv_id + 1;
-    expect_id++;
+    expect_id = recv_id + 1;
+    // expect_id++;
 }
 
 void loop_send3(UDSockClient& client)
@@ -116,13 +116,14 @@ int main(int argc, char** argv)
 {
     try
     {
+        signal(SIGPIPE, SIG_IGN);
         if (argc == 2)
         {
             g_sleep_us = atoi(argv[1]);
         }
         UDSockClient client;
         const int th_nums = 3;
-        if (client.Init(kServerAddress, &disconn_event) < 0)
+        if (!client.Init(kServerAddress, &disconn_event))
         {
             perror("Init");
             return -1;

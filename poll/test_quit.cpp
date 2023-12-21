@@ -1,4 +1,5 @@
 #include "poll_server.h"
+#include <unistd.h>
 class loop {
 public:
     std::string do_sponse(char* data, uint64_t size)
@@ -11,12 +12,15 @@ public:
         {
             perror("init");
         }
-        server.Run();
+        // server.Run();
+        sleep(3);
+        server.Stop();
     } 
 };
 
 int main()
 {
+    signal(SIGPIPE, SIG_IGN);
     loop l;
     l.run();
     return 0;

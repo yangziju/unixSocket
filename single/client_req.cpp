@@ -1,6 +1,7 @@
 #include <iostream>
 #include "domain_client.h"
 int g_sleep_us = 0;
+int g_cnt = 100;
 void disconn_event()
 {
     std::cout << "server quit...!!!" << std::endl;
@@ -13,9 +14,10 @@ void do_respone1(char* resp_buff, uint64_t size)
     uint64_t recv_id = std::stoll(data);
     if (recv_id != expect_id)
         std::cout << "expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
-    if (expect_id % 1000 == 0) 
+    if (expect_id % g_cnt == 0) 
         std::cout << "th1 success, id = " << expect_id << std::endl;
-    expect_id = recv_id + 1;
+    // expect_id = recv_id + 1;
+    expect_id++;
 }
 
 void loop_send1(UDSockClient& client)
@@ -39,9 +41,10 @@ void do_respone2(char* resp_buff, uint64_t size)
     uint64_t recv_id = std::stoll(data);
     if (recv_id != expect_id)
         std::cout << "expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
-    if (expect_id % 1000 == 0) 
+    if (expect_id % g_cnt == 0) 
         std::cout << "th2 success, id = " << expect_id << std::endl;
-    expect_id = recv_id + 1;
+    // expect_id = recv_id + 1;
+    expect_id++;
 }
 
 void loop_send2(UDSockClient& client)
@@ -65,9 +68,10 @@ void do_respone3(char* resp_buff, uint64_t size)
     uint64_t recv_id = std::stoll(data);
     if (recv_id != expect_id) 
         std::cout << "expect_id = " << expect_id << ", recv_id = " << recv_id  << ", resp_buff = " << resp_buff << std::endl;
-    if (expect_id % 1000 == 0) 
+    if (expect_id % g_cnt == 0) 
         std::cout << "th3 success, id = " << expect_id << std::endl;
-    expect_id = recv_id + 1;
+    // expect_id = recv_id + 1;
+    expect_id++;
 }
 
 void loop_send3(UDSockClient& client)

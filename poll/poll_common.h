@@ -6,6 +6,8 @@
 #include <fcntl.h>
 #include <assert.h>
 
+#include <signal.h>
+
 const int kBufferSize = 5120;
 const std::string kServerAddress = "/tmp/unix.sock";
 
@@ -14,7 +16,7 @@ const int kMaxFiles = 1024;
 
 // client configure
 const int kReConnectCount = 2;
-const int kReconnectInterval = 3; // s
+const int kReconnectInterval = 1; // s
 const uint64_t kCleanTimeoutRequest = 3000; // ms
 
 struct RpcRequestHdr
@@ -32,7 +34,7 @@ struct RpcRequestHdr
             close((fd));    \
             (fd) = -1;      \
         } \
-    } while (0); \
+    } while (0);
 
 
 inline void LOG_OUT(const std::string& info, const std::string& str)
@@ -40,7 +42,7 @@ inline void LOG_OUT(const std::string& info, const std::string& str)
     std::cout << info << " " << str << std::endl;
 }
 
-class UDSockBase
+class SockIO
 {
 public:
     struct Buffer
@@ -154,7 +156,6 @@ public:
     int64_t RecvData(int fd, char* buff, int64_t size)
     {
         int64_t n = 0;
-    again:
         n = recv(fd, (void*)buff, size, 0);
         if (n == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)

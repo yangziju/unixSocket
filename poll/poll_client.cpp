@@ -1,4 +1,5 @@
 #include <unistd.h>
+#include <sys/types.h>
 #include <poll.h>
 #include <errno.h>
 #include <cstring>
@@ -14,86 +15,53 @@ UDSockClient::UDSockClient()
 
 UDSockClient::~UDSockClient() 
 {
-    if(sock_ != -1)
-    {
-        close(sock_);
-    }
+    CLOSE_FD(sock_);
 }
 
-int UDSockClient::Init(const std::string server_addr, const disconnect_event& disconnect_fun)
+bool UDSockClient::Init(const std::string& server_addr, const OnDisconnct& on_disconn)
 {
-    int ret = 0;
-    on_disconnect = disconnect_fun;
+    on_disconn_ = on_disconn;
     addr_.sun_family = AF_UNIX;
     std::strcpy(addr_.sun_path, server_addr.c_str());
-    
-    if ((sock_ = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) 
-    {
-        return -errno;
-    }
-
-    struct timeval timeout;
-    timeout.tv_sec = 1;
-    timeout.tv_usec = 0;
-
-    if (SetNonBlocking(sock_) < 0)
-    {
-        ret = -errno;
-        CleanSocket("set socket noblock");
-        return ret;
-    }
-
-    if (connect(sock_, (struct sockaddr*)&addr_, sizeof(addr_)) == -1) 
-    {
-        ret = -errno;
-        CleanSocket("init");
-        return ret;
-    }
 
     thread_ = std::thread(&UDSockClient::Run, this);
 
-    return 0;
+    return true;
 }
 
-int UDSockClient::ConnectServer()
+bool UDSockClient::ConnectServer()
 {
-    int ret = 0, tmp_sock;
+    int tmp_sock;
     if ((tmp_sock = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) 
     {
-        ret = -errno;
-        std::cout << "udsock socket, create socket failed" << std::endl;
-        return ret;
+        return false;
     }
-
-    struct timeval timeout;
-    timeout.tv_sec = 0;
-    timeout.tv_usec = 100000;
 
     if (SetNonBlocking(tmp_sock) < 0)
     {
-        ret = -errno;
-        CleanSocket("set socket noblock");
-        return ret;
+        return false;
     }
 
-    on_disconnect();
-    for (int retry = 1; retry <= kReConnectCount; retry++)
+    on_disconn_();
+
+    for (int retry = 1; retry <= 10; retry++)
     {
         if (connect(tmp_sock, (struct sockaddr*)&addr_, sizeof(addr_)) == -1) 
         {
             std::cout << "connect server failed, retry count:" << retry << std::endl;
-            sleep(kReconnectInterval);
-            CleanTimeoutRequest();
+            CleanRequest();
+            usleep(100000);
             continue;
         }
         sock_ = tmp_sock;
-        return 0;
+        return true;
     }
-    return -ECONNREFUSED;
+    return false;
 }
 
 void UDSockClient::Run()
 {
+    int head_size = sizeof(RpcRequestHdr);
     Buffer buffer;
     buffer.AllocMem(buffer_size_);
 
@@ -106,19 +74,15 @@ void UDSockClient::Run()
     {
         if (sock_ == -1)
         {
-            if (ConnectServer() == 0) 
-            {
+            if (ConnectServer()) 
                 pfd.fd = sock_;
-            }
             else 
                 continue;
         }
 
-        if (poll(&pfd, 1, -1) == -1)
+        if (poll(&pfd, 1, 1) == -1)
         {
-            CLOSE_FD(sock_);
-            CleanTimeoutRequest();
-            continue;
+            std::cout << "poll ret = -1, errno: " << strerror(errno) << std::endl;
         }
 
         if (pfd.revents & POLLIN)
@@ -135,17 +99,16 @@ void UDSockClient::Run()
             if (nread == -1)
             {
                 LOG_OUT("read head failed", std::to_string(errno));
-                CleanTimeoutRequest();
-                CLOSE_FD(sock_);
+                CleanRequest();
+                // CLOSE_FD(sock_);
             }
             else
             {
-                // 解析包体
                 e += nread;
-                while((e - s) > sizeof(RpcRequestHdr))
+                while((e - s) > head_size)
                 {
                     RpcRequestHdr* head = reinterpret_cast<RpcRequestHdr*>(s);
-                    uint64_t req_size = head->data_size + sizeof(RpcRequestHdr);
+                    int req_size = head->data_size + head_size;
                     if (req_size <= (e - s))
                     {
                         {
@@ -153,7 +116,7 @@ void UDSockClient::Run()
                             auto it = request_.find(head->id);
                             if (it != request_.end())
                             {
-                                it->second.cbk(s + sizeof(RpcRequestHdr), head->data_size);
+                                it->second(s + head_size, head->data_size);
                                 request_.erase(head->id);
                             }
                         }
@@ -168,10 +131,15 @@ void UDSockClient::Run()
                 buffer.SavePos(buf, buf + (e - s));
             }
         }
-        else if (pfd.revents & (POLLERR | POLLHUP))
+        
+        if (pfd.revents & (POLLERR | POLLHUP))
         {
-            LOG_OUT("POLLERR | POLLHUP", strerror(errno));
-            CleanTimeoutRequest();
+            if (pfd.revents & POLLERR)
+                LOG_OUT("POLLERR event", strerror(errno));
+            else
+                LOG_OUT("POLLHUP event", strerror(errno));
+
+            CleanRequest();
             buffer.SavePos(buffer.buf, buffer.buf);
             CLOSE_FD(sock_);
         }
@@ -184,17 +152,16 @@ void UDSockClient::Run()
 
 int UDSockClient::SendRequest(std::string& request, const ResponseCbk& response_cbk)
 {
-    static unsigned long long request_id = 1;
+    static uint64_t request_id = 1;
     RpcRequestHdr head;
-    RequestValue value;
+    ResponseCbk cbk = response_cbk;
 
-    value.cbk = response_cbk;
-    clock_gettime(CLOCK_REALTIME, &value.time);
     head.data_size = request.size();
+
     {
         std::lock_guard<std::mutex> _(lock_req_);
         head.id = request_id++;
-        request_.insert(std::make_pair(head.id, value));
+        request_.insert(std::make_pair(head.id, cbk));
     }
 
     {
@@ -208,91 +175,23 @@ int UDSockClient::SendRequest(std::string& request, const ResponseCbk& response_
     return 0;
 }
 
-#if 0
-int UDSockClient::SendRequest(std::string& request, const ResponseCbk& response_cbk)
-{
-    static unsigned long long request_id = 1;
-    int ret = 0;
-    RequestValue value;
-    value.cbk = response_cbk;
-    clock_gettime(CLOCK_REALTIME, &value.time);
-
-    int buff_size = sizeof(RpcRequestHdr) + request.size();
-    char* send_buff = (char*)malloc(sizeof(char) * buff_size);
-    if (!send_buff)
-    {
-        return -errno;
-    }
-
-    RpcRequestHdr* head = reinterpret_cast<RpcRequestHdr*>(send_buff);
-    head->data_size = request.size();
-    memcpy(send_buff + sizeof(RpcRequestHdr), request.c_str(), request.size());
-
-    {
-        std::lock_guard<std::mutex> _(lock_req_);
-        head->id = request_id++;
-        request_.insert(std::make_pair(head->id, value));
-    }
-
-    {
-        std::lock_guard<std::mutex> _(lock_send_);
-        if (SendBytes(sock_, send_buff, buff_size) == -1)
-        {
-            ret = -errno;
-        }
-    }
-    free(send_buff);
-
-    return ret;
-}
-#endif
-
 void UDSockClient::Stop()
 {
     running_ = false;
-    CleanSocket("stop thread");
+    CLOSE_FD(sock_);
     if (thread_.joinable())
     {
         thread_.join();
     }
 }
 
-
-inline uint64_t diff_ms(const struct timespec& start, const struct timespec& now)
+inline void UDSockClient::CleanRequest()
 {
-    return (now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000;
-}
-
-void UDSockClient::CleanTimeoutRequest()
-{
-    struct timespec now;
-    clock_gettime(CLOCK_REALTIME, &now);
     std::lock_guard<std::mutex> _(lock_req_);
-    for (auto it = request_.begin(); it != request_.end();) 
-    {
-        if (diff_ms(it->second.time, now) >= kCleanTimeoutRequest) {
-            std::cout << "DEBUG clean request: " << it->first << " left count: " << request_.size() << std::endl;
-            it = request_.erase(it);
-        } else {
-            ++it;
-        }
-    }
+    request_.clear();
 }
 
 bool UDSockClient::IsConnected()
 {
     return sock_ != -1;
 }
-
-void UDSockClient::CleanSocket(std::string str)
-{
-    if (sock_ != -1)
-    {
-        std::cout << str << " close fd, errno = " << errno << std::endl;
-        close(sock_);
-        sock_ = -1;
-    }
-}
-
-
-
