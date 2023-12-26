@@ -34,7 +34,7 @@ bool UDSockServer::Init(const std::string& server_addr, const RequestCbk& on_req
     if (SetNonBlocking(lis_sock_) < 0)
     {
         LOG_OUT("SetNonBlocking failed" , strerror(errno));
-        close(lis_sock_);
+        CLOSE_FD(lis_sock_);
         return false;
     }
 
@@ -47,7 +47,7 @@ bool UDSockServer::Init(const std::string& server_addr, const RequestCbk& on_req
     if (-1 == bind(lis_sock_, (struct sockaddr*)&server_sockaddr, sizeof(server_sockaddr)))
     {
         LOG_OUT("bind failed" , strerror(errno));
-        close(lis_sock_);
+        CLOSE_FD(lis_sock_);
         unlink(address_.c_str());
         return false;
     }
@@ -55,7 +55,7 @@ bool UDSockServer::Init(const std::string& server_addr, const RequestCbk& on_req
     if (-1 == listen(lis_sock_, 5))
     {
         LOG_OUT("listen failed" , strerror(errno));
-        close(lis_sock_);
+        CLOSE_FD(lis_sock_);
         unlink(address_.c_str());
         return false;
     }
@@ -150,8 +150,8 @@ int UDSockServer::Run()
                     continue;
                 }
                 // std::cout << "s = " << *s << " e - s = " << (e - s) << " buf = " << *buf << " pit_size = " << pit_size << "buf size = " << buffer_size_ << std::endl;
-                int nread = RecvData(fds[i].fd, e, pit_size);
-                if (nread == -1)
+                int n = RecvData(fds[i].fd, e, pit_size);
+                if (n == -1)
                 {
                     LOG_OUT("read head failed", std::to_string(errno));
                     // CLOSE_FD(fds[i].fd);
@@ -159,7 +159,7 @@ int UDSockServer::Run()
                 else
                 {
                     // 解析包体
-                    e += nread;
+                    e += n;
                     while((e - s) > kHeadSize)
                     {
                         RpcRequestHdr* head = reinterpret_cast<RpcRequestHdr*>(s);
@@ -168,7 +168,7 @@ int UDSockServer::Run()
                         {
                             std::string data = on_request_(s, head->data_size);
                             head->data_size = data.size();
-                            if (WriteVec(fds[i].fd, s, kHeadSize, s + kHeadSize, head->data_size) == -1)
+                            if (WriteVec(fds[i].fd, s, kHeadSize, (void*)data.c_str(), data.size()) == -1)
                             {
                                 LOG_OUT("send data failed", strerror(errno));
                                 e = s = buf;

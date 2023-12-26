@@ -1,14 +1,13 @@
-#include <unistd.h>
 #include <sys/types.h>
-#include <poll.h>
+#include <sys/epoll.h>
 #include <errno.h>
 #include <cstring>
 #include <assert.h>
 #include "poll_client.h"
 
 
-UDSockClient::UDSockClient()
-    :buffer_size_(kBufferSize), sock_(-1), running_(false) 
+UDSockClient::UDSockClient(const int& buffer_size)
+    :buffer_size_(buffer_size), sock_(-1), running_(false) 
 {
 
 }
@@ -82,91 +81,107 @@ bool UDSockClient::ConnectServer()
 
 void UDSockClient::Run()
 {
-    int head_size = sizeof(RpcRequestHdr);
-    Buffer buffer;
-    buffer.AllocMem(buffer_size_);
+    constexpr int kHeadSize = sizeof(RpcRequestHdr);
+    int ev_cnt = 0, res = 0;
+    Buffer buffer(buffer_size_);
+    struct epoll_event ev;
+    int efd = epoll_create(1);
+    if (efd == -1)
+    {
+        perror("epoll_create");
+        return;
+    }
 
-    struct pollfd pfd;
-    pfd.fd = sock_;
-    pfd.events = POLLIN;
+    ev.events = EPOLLIN;
+    if (sock_ != -1)
+    {
+        ev.data.fd = sock_;
+        res = epoll_ctl(efd, EPOLL_CTL_ADD, sock_, &ev);
+        if (res == -1)
+        {
+            perror("epoll_ctl");
+            return;
+        }  
+    }
+
+
     running_ = true;
 
     while(running_)
     {
         if (sock_ == -1)
         {
-            if (ConnectServer()) 
-                pfd.fd = sock_;
+            if (ConnectServer())
+            {
+                res = epoll_ctl(efd, EPOLL_CTL_ADD, sock_, &ev);
+                if (res == -1)
+                {
+                    perror("epoll_ctl");
+                    return;
+                }  
+            }
             else 
                 continue;
         }
 
-        if (poll(&pfd, 1, 1) == -1)
+        if (epoll_wait(efd, &ev, 1, 10) <= 0)
         {
-            std::cout << "poll ret = -1, errno: " << strerror(errno) << std::endl;
+            continue;
         }
 
-        if (pfd.revents & POLLIN)
+        if (ev.events & (EPOLLERR | EPOLLHUP))
         {
-            char *s = buffer.s, *e = buffer.e, *buf = buffer.buf;
-            int32_t pit_size = buffer_size_ - (e - buf);
-            if (pit_size == 0) 
-            {
-                std::cout << "s = " << *s << " e - s = " << (e - s) << " buf = " << *buf << " pit_size = " << pit_size << "buf size = " << buffer_size_ << std::endl;
-                sleep(1);
-                continue;
-            }
-            int nread = RecvData(sock_, e, pit_size);
-            if (nread == -1)
-            {
-                LOG_OUT("read head failed", std::to_string(errno));
-                CleanRequest();
-                // CLOSE_FD(sock_);
-            }
+            if (ev.events & EPOLLERR)
+                LOG_OUT("POLLERR event", strerror(errno));
             else
+                LOG_OUT("POLLHUP event", strerror(errno));
+
+            res = epoll_ctl(efd, EPOLL_CTL_DEL, ev.data.fd, NULL);
+            if (res == -1)
             {
-                e += nread;
-                while((e - s) > head_size)
+                perror("EPOLL_CTL_DEL");
+            }
+            buffer.ResetPos();
+            CLOSE_FD(sock_);
+            continue;
+        }
+    
+        if (ev.events & EPOLLIN)
+        {
+            int bytes = RecvData(sock_, buffer.PitAddr(), buffer.PitSize());
+            if (bytes > 0)
+            {
+                buffer.Fill(bytes);
+                while(buffer.DataSize() > kHeadSize)
                 {
-                    RpcRequestHdr* head = reinterpret_cast<RpcRequestHdr*>(s);
-                    int req_size = head->data_size + head_size;
-                    if (req_size <= (e - s))
+                    RpcRequestHdr* head = reinterpret_cast<RpcRequestHdr*>(buffer.DataAddr());
+                    int total_size = head->data_size + kHeadSize;
+                    if (total_size > buffer.Size())
+                    {
+                        buffer.Expand(total_size + 2 * kHeadSize);
+                    }
+                    if (total_size <= buffer.DataSize())
                     {
                         {
                             std::lock_guard<std::mutex> _(lock_req_);
                             auto it = request_.find(head->id);
                             if (it != request_.end())
                             {
-                                it->second(s + head_size, head->data_size);
+                                it->second(buffer.DataAddr() + kHeadSize, head->data_size);
                                 request_.erase(head->id);
                             }
                         }
-                        s += req_size;
+                        buffer.Dig(total_size);
                     }
                     else
                     {
                         break;
                     }
                 }
-                memcpy(buf, s, e - s);
-                buffer.SavePos(buf, buf + (e - s));
+                buffer.Move();
             }
         }
-        
-        if (pfd.revents & (POLLERR | POLLHUP))
-        {
-            if (pfd.revents & POLLERR)
-                LOG_OUT("POLLERR event", strerror(errno));
-            else
-                LOG_OUT("POLLHUP event", strerror(errno));
-
-            CleanRequest();
-            buffer.SavePos(buffer.buf, buffer.buf);
-            CLOSE_FD(sock_);
-        }
     }
-
-    buffer.Clean();
 
     std::cout << "udsocket client thread exit" << std::endl;
 }
